@@ -1,0 +1,84 @@
+name: Sonidex CI
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-desktop:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            target: sonidex-linux-amd64
+          - os: windows
+            arch: amd64
+            target: sonidex-windows-amd64.exe
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends             libgl1-mesa-dev xorg-dev libasound2-dev gcc-mingw-w64
+
+      - name: Download Modules
+        run: |
+          go mod tidy
+
+      - name: Build Binary
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: 1
+        run: |
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            export CC=x86_64-w64-mingw32-gcc
+            go build -ldflags="-H windowsgui -s -w" -o ${{ matrix.target }} .
+          else
+            go build -ldflags="-s -w" -o ${{ matrix.target }} .
+          fi
+
+      - name: Upload Desktop Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ matrix.target }}
+
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Download Modules
+        run: |
+          go mod tidy
+
+      - name: Install fyne-cross
+        run: go install github.com/fyne-io/fyne-cross@latest
+
+      - name: Build Android APK
+        run: |
+          fyne-cross android -app-id com.local.sonidex -icon icon.png .
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonidex-android-apk
+          path: fyne-cross/dist/android/*.apk
