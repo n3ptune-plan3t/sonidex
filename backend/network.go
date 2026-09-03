@@ -2,11 +2,49 @@ package backend
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
+	"runtime"
+	"strings"
 
 	"github.com/gen2brain/malgo"
 )
+
+// loopbackCaptureConfig returns a capture-side DeviceConfig configured to
+// record whatever is currently playing on the system's default output.
+//
+// malgo.Loopback (ma_device_type_loopback) is only implemented on WASAPI,
+// i.e. Windows - see miniaudio's own docs/examples. On Linux/BSD (PulseAudio,
+// PipeWire's Pulse shim, ALSA) there is no native loopback device type; the
+// standard workaround is to enumerate capture devices and open the "Monitor
+// of ..." source that PulseAudio/PipeWire exposes for the active sink as an
+// ordinary capture device. Without this, InitDevice either fails outright or
+// silently captures from the mic instead of system audio on non-Windows
+// hosts, which is very likely why this was failing during testing.
+func loopbackCaptureConfig(mCtx *malgo.AllocatedContext) (malgo.DeviceConfig, error) {
+	if runtime.GOOS == "windows" {
+		return malgo.DefaultDeviceConfig(malgo.Loopback), nil
+	}
+
+	cfg := malgo.DefaultDeviceConfig(malgo.Capture)
+
+	infos, err := mCtx.Devices(malgo.Capture)
+	if err != nil {
+		return cfg, fmt.Errorf("enumerating capture devices: %w", err)
+	}
+
+	for _, info := range infos {
+		name := strings.ToLower(info.Name())
+		if strings.Contains(name, "monitor of") || strings.Contains(name, ".monitor") {
+			id := info.ID
+			cfg.Capture.DeviceID = id.Pointer()
+			return cfg, nil
+		}
+	}
+
+	return cfg, fmt.Errorf("no loopback/monitor capture device found - on PulseAudio/PipeWire, make sure a sink monitor source is available (check with `pactl list sources short`)")
+}
 
 func StartTCPSender(ctx context.Context, targetAddr string, mCtx *malgo.AllocatedContext) error {
 	var d net.Dialer
@@ -20,7 +58,10 @@ func StartTCPSender(ctx context.Context, targetAddr string, mCtx *malgo.Allocate
 		_ = tcpConn.SetNoDelay(true)
 	}
 
-	deviceConfig := malgo.DefaultDeviceConfig(malgo.Loopback)
+	deviceConfig, err := loopbackCaptureConfig(mCtx)
+	if err != nil {
+		return err
+	}
 	deviceConfig.Capture.Format = Format
 	deviceConfig.Capture.Channels = Channels
 	deviceConfig.SampleRate = SampleRate
