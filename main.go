@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	_ "embed"
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
@@ -137,6 +138,8 @@ func (s *AppState) toggleAndroidReceiver() {
 		return backend.StartTCPReceiver(ctx, port, audioBuf, 1920)
 	})
 }
+
+var appIconBytes []byte
 
 func main() {
 	myApp := app.New()
