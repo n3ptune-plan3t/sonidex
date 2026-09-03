@@ -2,7 +2,6 @@ package backend
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net"
 	"sync"
