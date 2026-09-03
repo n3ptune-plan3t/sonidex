@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"time"
 
 	"sonidex/backend"
 
@@ -15,6 +16,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"github.com/gen2brain/malgo"
 )
+const maxStreamRetries = 5
 
 type AppState struct {
 	ctx           context.Context
@@ -26,6 +28,8 @@ type AppState struct {
 	deviceSelect  *widget.Select
 	latencySelect *widget.Select
 	portEntry     *widget.Entry
+	adbDevice     string
+	adbPort       string
 }
 
 func main() {
@@ -73,7 +77,7 @@ func buildDesktopUI(w fyne.Window, s *AppState) {
 	})
 
 	s.latencySelect = widget.NewSelect([]string{"Ultra Low (5ms)", "Low (10ms)", "Safe (20ms)"}, nil)
-	s.latencySelect.SetSelected("Low (10ms)")
+	s.latencySelect.SetSelected(backend.DefaultLatencyPreset)
 
 	s.actionBtn = widget.NewButton("Connect & Stream Audio", func() {
 		s.toggleDesktopStream()
@@ -112,6 +116,44 @@ func buildAndroidUI(w fyne.Window, s *AppState) {
 	w.SetContent(container.NewPadded(content))
 }
 
+func (s *AppState) selectedPeriodFrames() uint32 {
+	label := backend.DefaultLatencyPreset
+	if s.latencySelect != nil && s.latencySelect.Selected != "" {
+		label = s.latencySelect.Selected
+	}
+	if frames, ok := backend.LatencyPresets[label]; ok {
+		return frames
+	}
+	return backend.LatencyPresets[backend.DefaultLatencyPreset]
+}
+func (s *AppState) runStreamLoop(label string, run func(ctx context.Context) error, onGiveUp func()) {
+	backoff := time.Second
+	for attempt := 0; ; attempt++ {
+		err := run(s.ctx)
+		if s.ctx.Err() != nil {
+			return
+		}
+		if err == nil {
+			return
+		}
+		if attempt >= maxStreamRetries {
+			s.statusLbl.SetText(fmt.Sprintf("%s failed: %v", label, err))
+			s.isRunning = false
+			onGiveUp()
+			return
+		}
+		s.statusLbl.SetText(fmt.Sprintf("%s dropped (%v) - retrying in %s...", label, err, backoff))
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff < 8*time.Second {
+			backoff *= 2
+		}
+	}
+}
+
 func (s *AppState) toggleDesktopStream() {
 	if s.isRunning {
 		if s.cancel != nil {
@@ -120,6 +162,10 @@ func (s *AppState) toggleDesktopStream() {
 		s.isRunning = false
 		s.actionBtn.SetText("Connect & Stream Audio")
 		s.statusLbl.SetText("Status: Idle")
+		if s.adbDevice != "" && s.adbPort != "" {
+			_ = backend.RemoveADBReverse(s.adbDevice, s.adbPort)
+			s.adbDevice, s.adbPort = "", ""
+		}
 		return
 	}
 
@@ -131,23 +177,23 @@ func (s *AppState) toggleDesktopStream() {
 
 	port := s.portEntry.Text
 	if err := backend.SetupADBReverse(selectedDevice, port); err != nil {
-		s.statusLbl.SetText("Error: ADB reverse forward failed")
+		s.statusLbl.SetText("Error: ADB port forward failed")
 		return
 	}
+	s.adbDevice, s.adbPort = selectedDevice, port
+
+	periodFrames := s.selectedPeriodFrames()
 
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.isRunning = true
 	s.actionBtn.SetText("Stop Streaming")
 	s.statusLbl.SetText("Streaming Lossless PCM via USB...")
 
-	go func() {
-		err := backend.StartTCPSender(s.ctx, "127.0.0.1:"+port, s.mCtx)
-		if err != nil && s.isRunning {
-			s.statusLbl.SetText("Stream Error: " + err.Error())
-			s.isRunning = false
-			s.actionBtn.SetText("Connect & Stream Audio")
-		}
-	}()
+	go s.runStreamLoop("Stream", func(ctx context.Context) error {
+		return backend.StartTCPSender(ctx, "127.0.0.1:"+port, s.mCtx, periodFrames)
+	}, func() {
+		s.actionBtn.SetText("Connect & Stream Audio")
+	})
 }
 
 func (s *AppState) toggleAndroidReceiver() {
@@ -161,17 +207,16 @@ func (s *AppState) toggleAndroidReceiver() {
 		return
 	}
 
+	periodFrames := backend.LatencyPresets[backend.DefaultLatencyPreset]
+
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.isRunning = true
 	s.actionBtn.SetText("Stop Receiving")
 	s.statusLbl.SetText("Listening for USB stream...")
 
-	go func() {
-		err := backend.StartTCPReceiver(s.ctx, ":"+s.portEntry.Text, s.mCtx)
-		if err != nil && s.isRunning {
-			s.statusLbl.SetText("Receiver Error: " + err.Error())
-			s.isRunning = false
-			s.actionBtn.SetText("Start Receiving Audio")
-		}
-	}()
+	go s.runStreamLoop("Receiver", func(ctx context.Context) error {
+		return backend.StartTCPReceiver(ctx, ":"+s.portEntry.Text, s.mCtx, periodFrames)
+	}, func() {
+		s.actionBtn.SetText("Start Receiving Audio")
+	})
 }
