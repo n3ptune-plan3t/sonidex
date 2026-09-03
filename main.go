@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"strconv"
 	"time"
 
 	"sonidex/backend"
@@ -16,13 +17,17 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"github.com/gen2brain/malgo"
 )
+
 const maxStreamRetries = 5
+
+const latencyProbeSamples = 20
 
 type AppState struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
 	isRunning     bool
 	mCtx          *malgo.AllocatedContext
+	prefs         fyne.Preferences
 	statusLbl     *widget.Label
 	actionBtn     *widget.Button
 	deviceSelect  *widget.Select
@@ -45,10 +50,12 @@ func main() {
 
 	state := &AppState{
 		mCtx:      mCtx,
+		prefs:     a.Preferences(),
 		statusLbl: widget.NewLabel("Status: Ready"),
 		portEntry: widget.NewEntry(),
 	}
-	state.portEntry.SetText("5005")
+	state.portEntry.SetText(state.prefs.StringWithFallback("port", "5005"))
+	state.portEntry.OnChanged = func(v string) { state.prefs.SetString("port", v) }
 
 	if runtime.GOOS == "android" {
 		buildAndroidUI(w, state)
@@ -62,6 +69,7 @@ func main() {
 func buildDesktopUI(w fyne.Window, s *AppState) {
 	s.deviceSelect = widget.NewSelect([]string{}, nil)
 	s.deviceSelect.PlaceHolder = "Select Connected Device"
+	s.deviceSelect.OnChanged = func(v string) { s.prefs.SetString("lastDevice", v) }
 
 	refreshBtn := widget.NewButton("Scan USB Devices", func() {
 		devices, err := backend.ListADBDevices()
@@ -72,15 +80,30 @@ func buildDesktopUI(w fyne.Window, s *AppState) {
 			return
 		}
 		s.deviceSelect.Options = devices
-		s.deviceSelect.SetSelected(devices[0])
+
+		selected := devices[0]
+		if last := s.prefs.String("lastDevice"); last != "" {
+			for _, d := range devices {
+				if d == last {
+					selected = d
+					break
+				}
+			}
+		}
+		s.deviceSelect.SetSelected(selected)
 		s.statusLbl.SetText(fmt.Sprintf("Status: Found %d device(s)", len(devices)))
 	})
 
 	s.latencySelect = widget.NewSelect([]string{"Ultra Low (5ms)", "Low (10ms)", "Safe (20ms)"}, nil)
-	s.latencySelect.SetSelected(backend.DefaultLatencyPreset)
+	s.latencySelect.SetSelected(s.prefs.StringWithFallback("latency", backend.DefaultLatencyPreset))
+	s.latencySelect.OnChanged = func(v string) { s.prefs.SetString("latency", v) }
 
 	s.actionBtn = widget.NewButton("Connect & Stream Audio", func() {
 		s.toggleDesktopStream()
+	})
+
+	measureBtn := widget.NewButton("Measure Latency", func() {
+		s.measureLatency()
 	})
 
 	content := container.NewVBox(
@@ -93,6 +116,7 @@ func buildDesktopUI(w fyne.Window, s *AppState) {
 		s.portEntry,
 		layout.NewSpacer(),
 		s.actionBtn,
+		measureBtn,
 		s.statusLbl,
 	)
 
@@ -126,6 +150,15 @@ func (s *AppState) selectedPeriodFrames() uint32 {
 	}
 	return backend.LatencyPresets[backend.DefaultLatencyPreset]
 }
+
+func probePortFor(port string) (string, error) {
+	n, err := strconv.Atoi(port)
+	if err != nil {
+		return "", fmt.Errorf("invalid port %q", port)
+	}
+	return strconv.Itoa(n + 1), nil
+}
+
 func (s *AppState) runStreamLoop(label string, run func(ctx context.Context) error, onGiveUp func()) {
 	backoff := time.Second
 	for attempt := 0; ; attempt++ {
@@ -196,6 +229,42 @@ func (s *AppState) toggleDesktopStream() {
 	})
 }
 
+func (s *AppState) measureLatency() {
+	selectedDevice := s.deviceSelect.Selected
+	if selectedDevice == "" {
+		s.statusLbl.SetText("Error: Select a USB device first")
+		return
+	}
+
+	probePort, err := probePortFor(s.portEntry.Text)
+	if err != nil {
+		s.statusLbl.SetText("Error: " + err.Error())
+		return
+	}
+
+	if err := backend.SetupADBReverse(selectedDevice, probePort); err != nil {
+		s.statusLbl.SetText("Error: could not open latency probe tunnel")
+		return
+	}
+
+	s.statusLbl.SetText("Measuring latency...")
+
+	go func() {
+		defer func() { _ = backend.RemoveADBReverse(selectedDevice, probePort) }()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		rtt, err := backend.MeasureLatency(ctx, "127.0.0.1:"+probePort, latencyProbeSamples)
+		if err != nil {
+			s.statusLbl.SetText("Latency test failed - is the phone receiving? (" + err.Error() + ")")
+			return
+		}
+		rttMs := float64(rtt.Microseconds()) / 1000
+		s.statusLbl.SetText(fmt.Sprintf("Round-trip: %.1fms (~%.1fms one-way est.)", rttMs, rttMs/2))
+	}()
+}
+
 func (s *AppState) toggleAndroidReceiver() {
 	if s.isRunning {
 		if s.cancel != nil {
@@ -219,4 +288,12 @@ func (s *AppState) toggleAndroidReceiver() {
 	}, func() {
 		s.actionBtn.SetText("Start Receiving Audio")
 	})
+
+	if probePort, err := probePortFor(s.portEntry.Text); err == nil {
+		go func(ctx context.Context) {
+			if err := backend.StartLatencyEcho(ctx, ":"+probePort); err != nil && ctx.Err() == nil {
+				log.Printf("latency echo listener stopped: %v", err)
+			}
+		}(s.ctx)
+	}
 }
