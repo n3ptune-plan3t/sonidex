@@ -226,7 +226,7 @@ func main() {
 	if softwareRenderingRequested() {
 		applySoftwareRendering()
 	}
-	myApp := app.New()
+	myApp := app.NewWithID("com.local.sonidex")
 	if myApp.Preferences().BoolWithFallback("no_gpu", false) {
 		applySoftwareRendering()
 	}
