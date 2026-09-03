@@ -6,7 +6,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"unsafe"
 
 	"github.com/gen2brain/malgo"
 )
@@ -136,7 +135,7 @@ func StartDesktopStream(ctx context.Context, addr string) error {
 			}
 		}
 		if haveSelected {
-			cfg.Capture.DeviceID = unsafe.Pointer(&selectedID)
+			cfg.Capture.DeviceID = selectedID.Pointer()
 		}
 	}
 	cfg.Capture.Format = malgo.FormatS16
