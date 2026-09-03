@@ -10,28 +10,36 @@ const (
 	SampleRate = 48000
 	Channels   = 2
 	Format     = malgo.FormatS16
-	ChunkSize  = 1920
 )
+
+var LatencyPresets = map[string]uint32{
+	"Ultra Low (5ms)": 240,
+	"Low (10ms)":      480,
+	"Safe (20ms)":     960,
+}
+
+const DefaultLatencyPreset = "Low (10ms)"
+
+func BytesForPeriod(periodFrames uint32) int {
+	return int(periodFrames) * Channels * malgo.SampleSizeInBytes(Format)
+}
 
 type AudioBuffer struct {
 	sync.Mutex
 	data []byte
+	cap  int
 }
 
-const maxBufferedBytes = ChunkSize * 4
+func NewAudioBuffer(periodBytes int) *AudioBuffer {
+	return &AudioBuffer{cap: periodBytes * 4}
+}
 
-// Push appends p to the jitter buffer, then trims from the front if the
-// buffer has grown past maxBufferedBytes. Previously this trimmed len(p)
-// bytes *before* appending len(p) bytes back, which is a net-zero change -
-// once the buffer exceeded the threshold once (e.g. from a network burst or
-// a slow playback callback), it never actually shrank again and buffered
-// latency would just accumulate for the life of the stream.
 func (b *AudioBuffer) Push(p []byte) {
 	b.Lock()
 	defer b.Unlock()
 	b.data = append(b.data, p...)
-	if len(b.data) > maxBufferedBytes {
-		b.data = b.data[len(b.data)-maxBufferedBytes:]
+	if b.cap > 0 && len(b.data) > b.cap {
+		b.data = b.data[len(b.data)-b.cap:]
 	}
 }
 
