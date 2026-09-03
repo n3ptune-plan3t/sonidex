@@ -1,9 +1,11 @@
 package main
 
 import (
-	_ "embed"
 	"context"
 	"fmt"
+	"os"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,155 +17,222 @@ import (
 	"sonidex/backend"
 )
 
-type AppState struct {
-	mu        sync.Mutex
-	isRunning bool
-	ctx       context.Context
-	cancel    context.CancelFunc
-
-	statusLabel *widget.Label
-	actionBtn   *widget.Button
-	portEntry   *widget.Entry
-	ipEntry     *widget.Entry
+func softwareRenderingRequested() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("SONIDEX_NO_GPU")))
+	return v == "1" || v == "true" || v == "yes" || v == "on"
 }
 
-func (s *AppState) getIsRunning() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.isRunning
+func applySoftwareRendering() {
+	_ = os.Setenv("SONIDEX_NO_GPU", "1")
+	_ = os.Setenv("LIBGL_ALWAYS_SOFTWARE", "1")
+	_ = os.Setenv("GALLIUM_DRIVER", "llvmpipe")
 }
 
-func (s *AppState) updateUIStatus(text string, btnText string) {
-	s.statusLabel.SetText(text)
-	if btnText != "" {
-		s.actionBtn.SetText(btnText)
-	}
+type sessionController struct {
+	mu      sync.Mutex
+	running bool
+	cancel  context.CancelFunc
+	status  *widget.Label
+	button  *widget.Button
 }
 
-func (s *AppState) runStreamLoop(sessionCtx context.Context, task func(ctx context.Context) error) {
+func (c *sessionController) loop(sessCtx context.Context, task func(context.Context) error, reconnectFmt string, failedText string, startText string) {
 	maxRetries := 5
 	backoff := 500 * time.Millisecond
-
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		if sessionCtx.Err() != nil {
+		if sessCtx.Err() != nil {
 			return
 		}
-
-		err := task(sessionCtx)
-		if err == nil || sessionCtx.Err() != nil {
+		err := task(sessCtx)
+		if err == nil || sessCtx.Err() != nil {
 			return
 		}
-
-		s.updateUIStatus(fmt.Sprintf("Disconnected. Reconnecting (%d/%d)...", attempt, maxRetries), "")
-
+		c.status.SetText(fmt.Sprintf(reconnectFmt, attempt, maxRetries))
 		select {
-		case <-sessionCtx.Done():
+		case <-sessCtx.Done():
 			return
 		case <-time.After(backoff):
 		}
-
 		backoff *= 2
 		if backoff > 4*time.Second {
 			backoff = 4 * time.Second
 		}
 	}
-
-	s.mu.Lock()
-	if s.ctx == sessionCtx {
-		s.isRunning = false
-		s.cancel = nil
-		s.updateUIStatus("Connection failed.", "Start")
-	}
-	s.mu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.running = false
+	c.cancel = nil
+	c.status.SetText(failedText)
+	c.button.SetText(startText)
 }
 
-func (s *AppState) toggleDesktopStream() {
-	s.mu.Lock()
-	if s.isRunning {
-		if s.cancel != nil {
-			s.cancel()
-			s.cancel = nil
+func newGPUCheck(a fyne.App, status *widget.Label) *widget.Check {
+	check := widget.NewCheck("Disable GPU (software rendering)", func(enabled bool) {
+		a.Preferences().SetBool("no_gpu", enabled)
+		if enabled {
+			applySoftwareRendering()
+			status.SetText("Software rendering on. Restart the app to apply fully.")
+		} else {
+			status.SetText("Hardware rendering on. Restart the app to apply fully.")
 		}
-		s.isRunning = false
-		s.mu.Unlock()
-		s.updateUIStatus("Stream stopped.", "Start Streaming")
-		return
-	}
-
-	sessCtx, sessCancel := context.WithCancel(context.Background())
-	s.ctx = sessCtx
-	s.cancel = sessCancel
-	s.isRunning = true
-	s.mu.Unlock()
-
-	s.updateUIStatus("Streaming active...", "Stop Streaming")
-
-	go s.runStreamLoop(sessCtx, func(ctx context.Context) error {
-		targetAddr := s.ipEntry.Text + ":" + s.portEntry.Text
-		_ = targetAddr
-		<-ctx.Done()
-		return nil
 	})
+	check.Checked = a.Preferences().BoolWithFallback("no_gpu", softwareRenderingRequested())
+	check.Refresh()
+	return check
 }
 
-func (s *AppState) toggleAndroidReceiver() {
-	s.mu.Lock()
-	if s.isRunning {
-		if s.cancel != nil {
-			s.cancel()
-			s.cancel = nil
+func showStreamer(a fyne.App) {
+	myWindow := a.NewWindow("Sonidex Streamer")
+	statusLabel := widget.NewLabel("Ready")
+	portEntry := widget.NewEntry()
+	portEntry.SetText("8080")
+	deviceSelect := widget.NewSelect([]string{}, func(string) {})
+	ctrl := &sessionController{status: statusLabel}
+	refreshDevices := func() {
+		devices, err := backend.ListADBDevices()
+		if err != nil {
+			deviceSelect.Options = []string{}
+			deviceSelect.Selected = ""
+			deviceSelect.Refresh()
+			statusLabel.SetText("adb not found in PATH.")
+			return
 		}
-		s.isRunning = false
-		s.mu.Unlock()
-		s.updateUIStatus("Receiver stopped.", "Start Receiving")
-		return
+		if len(devices) == 0 {
+			deviceSelect.Options = []string{}
+			deviceSelect.Selected = ""
+			deviceSelect.Refresh()
+			statusLabel.SetText("No ADB devices found.")
+			return
+		}
+		deviceSelect.Options = devices
+		deviceSelect.SetSelected(devices[0])
+		statusLabel.SetText("Select target device.")
 	}
-
-	sessCtx, sessCancel := context.WithCancel(context.Background())
-	s.ctx = sessCtx
-	s.cancel = sessCancel
-	s.isRunning = true
-	s.mu.Unlock()
-
-	s.updateUIStatus("Listening for audio...", "Stop Receiving")
-
-	go s.runStreamLoop(sessCtx, func(ctx context.Context) error {
-		port := s.portEntry.Text
+	ctrl.button = widget.NewButton("Start Streaming", func() {
+		ctrl.mu.Lock()
+		if ctrl.running {
+			cancel := ctrl.cancel
+			ctrl.cancel = nil
+			ctrl.running = false
+			serial := deviceSelect.Selected
+			port := strings.TrimSpace(portEntry.Text)
+			if port == "" {
+				port = "8080"
+			}
+			ctrl.mu.Unlock()
+			if cancel != nil {
+				cancel()
+			}
+			if serial != "" {
+				_ = backend.RemoveADBReverse(serial, port)
+			}
+			statusLabel.SetText("Stream stopped.")
+			ctrl.button.SetText("Start Streaming")
+			return
+		}
+		port := strings.TrimSpace(portEntry.Text)
 		if port == "" {
 			port = "8080"
 		}
-		audioBuf := backend.NewAudioBuffer(96000)
-		return backend.StartTCPReceiver(ctx, port, audioBuf, 1920)
+		serial := deviceSelect.Selected
+		if serial != "" {
+			if err := backend.SetupADBReverse(serial, port); err != nil {
+				ctrl.mu.Unlock()
+				statusLabel.SetText("ADB forward failed. Check USB debugging.")
+				return
+			}
+		}
+		sessCtx, sessCancel := context.WithCancel(context.Background())
+		ctrl.cancel = sessCancel
+		ctrl.running = true
+		ctrl.mu.Unlock()
+		statusLabel.SetText("Streaming active...")
+		ctrl.button.SetText("Stop Streaming")
+		addr := "127.0.0.1:" + port
+		go ctrl.loop(sessCtx, func(ctx context.Context) error {
+			return backend.StartDesktopStream(ctx, addr)
+		}, "Disconnected. Reconnecting (%d/%d)...", "Connection failed.", "Start Streaming")
 	})
+	refreshBtn := widget.NewButton("Refresh Devices", func() {
+		refreshDevices()
+	})
+	gpuCheck := newGPUCheck(a, statusLabel)
+	content := container.NewVBox(
+		widget.NewLabelWithStyle("Sonidex Streamer", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		widget.NewLabel("Android Target Device:"),
+		deviceSelect,
+		refreshBtn,
+		widget.NewLabel("Port:"),
+		portEntry,
+		gpuCheck,
+		statusLabel,
+		ctrl.button,
+	)
+	myWindow.SetContent(content)
+	myWindow.Resize(fyne.NewSize(420, 400))
+	refreshDevices()
+	myWindow.ShowAndRun()
 }
 
-var appIconBytes []byte
+func showReceiver(a fyne.App) {
+	myWindow := a.NewWindow("Sonidex Receiver")
+	statusLabel := widget.NewLabel("Ready")
+	portEntry := widget.NewEntry()
+	portEntry.SetText("8080")
+	ctrl := &sessionController{status: statusLabel}
+	ctrl.button = widget.NewButton("Start Receiving", func() {
+		ctrl.mu.Lock()
+		if ctrl.running {
+			cancel := ctrl.cancel
+			ctrl.cancel = nil
+			ctrl.running = false
+			ctrl.mu.Unlock()
+			if cancel != nil {
+				cancel()
+			}
+			statusLabel.SetText("Receiver stopped.")
+			ctrl.button.SetText("Start Receiving")
+			return
+		}
+		port := strings.TrimSpace(portEntry.Text)
+		if port == "" {
+			port = "8080"
+		}
+		sessCtx, sessCancel := context.WithCancel(context.Background())
+		ctrl.cancel = sessCancel
+		ctrl.running = true
+		ctrl.mu.Unlock()
+		statusLabel.SetText("Listening for audio...")
+		ctrl.button.SetText("Stop Receiving")
+		go ctrl.loop(sessCtx, func(ctx context.Context) error {
+			return backend.StartReceiverWithPlayback(ctx, port)
+		}, "Disconnected. Reconnecting (%d/%d)...", "Connection failed.", "Start Receiving")
+	})
+	gpuCheck := newGPUCheck(a, statusLabel)
+	content := container.NewVBox(
+		widget.NewLabelWithStyle("Sonidex Receiver", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		widget.NewLabel("Port:"),
+		portEntry,
+		gpuCheck,
+		statusLabel,
+		ctrl.button,
+	)
+	myWindow.SetContent(content)
+	myWindow.Resize(fyne.NewSize(360, 280))
+	myWindow.ShowAndRun()
+}
 
 func main() {
-	myApp := app.New()
-	myWindow := myApp.NewWindow("Sonidex")
-
-	state := &AppState{
-		statusLabel: widget.NewLabel("Ready"),
-		portEntry:   widget.NewEntry(),
-		ipEntry:     widget.NewEntry(),
+	if softwareRenderingRequested() {
+		applySoftwareRendering()
 	}
-	state.portEntry.SetText("8080")
-	state.ipEntry.SetText("127.0.0.1")
-
-	state.actionBtn = widget.NewButton("Start", func() {
-		state.toggleAndroidReceiver()
-	})
-
-	content := container.NewVBox(
-		widget.NewLabelWithStyle("Sonidex Audio Bridge", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-		widget.NewLabel("Port:"),
-		state.portEntry,
-		state.statusLabel,
-		state.actionBtn,
-	)
-
-	myWindow.SetContent(content)
-	myWindow.Resize(fyne.NewSize(360, 240))
-	myWindow.ShowAndRun()
+	myApp := app.New()
+	if myApp.Preferences().BoolWithFallback("no_gpu", false) {
+		applySoftwareRendering()
+	}
+	if runtime.GOOS == "android" {
+		showReceiver(myApp)
+		return
+	}
+	showStreamer(myApp)
 }
