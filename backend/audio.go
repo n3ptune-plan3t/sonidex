@@ -18,13 +18,21 @@ type AudioBuffer struct {
 	data []byte
 }
 
+const maxBufferedBytes = ChunkSize * 4
+
+// Push appends p to the jitter buffer, then trims from the front if the
+// buffer has grown past maxBufferedBytes. Previously this trimmed len(p)
+// bytes *before* appending len(p) bytes back, which is a net-zero change -
+// once the buffer exceeded the threshold once (e.g. from a network burst or
+// a slow playback callback), it never actually shrank again and buffered
+// latency would just accumulate for the life of the stream.
 func (b *AudioBuffer) Push(p []byte) {
 	b.Lock()
 	defer b.Unlock()
-	if len(b.data) > ChunkSize*2 {
-		b.data = b.data[len(p):]
-	}
 	b.data = append(b.data, p...)
+	if len(b.data) > maxBufferedBytes {
+		b.data = b.data[len(b.data)-maxBufferedBytes:]
+	}
 }
 
 func (b *AudioBuffer) Read(p []byte) int {
