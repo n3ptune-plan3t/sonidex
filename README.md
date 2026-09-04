@@ -1,6 +1,6 @@
 # Sonidex
 
-**Sonidex** is an ultra-low-latency desktop-to-Android audio bridge designed to run directly over a physical USB connection using automated ADB tunneling. It eliminates wireless jitter and streams uncompressed 16-bit 48 kHz stereo PCM audio directly to your mobile device with ~10–15 ms latency.
+Sonidex is an ultra-low-latency desktop-to-Android audio bridge that streams uncompressed 16-bit 48 kHz stereo PCM audio directly to your mobile device, with ~10–15 ms latency over a physical USB connection using automated ADB tunneling. (Wireless ADB and direct WiFi connections are also supported for cable-free setups, at the cost of some added latency and jitter compared to USB.)
 
 The Linux and Windows builds are the **streamer** (capture system audio and send it). The Android build is the **receiver** (listen and play it).
 
@@ -12,10 +12,10 @@ To be updated soon
 ---
 
 ### Features
-* **Zero Terminal Setup:** Automatically discovers connected devices and provisions ADB tunnels behind the scenes.
+* **Zero Terminal Setup:** GUI based that automatically discovers connected devices and provisions ADB tunnels behind the scenes.
 * **Lossless PCM:** Raw 48 kHz stereo streaming without compression overhead or fidelity loss.
 * **Cross-platform UI:** Lightweight Fyne GUI running natively across platforms (Windows/Linux) and display servers (Xorg/XLibre/Wayland), with an optional software-rendering mode that avoids GPU usage.
-* **Terminal UI option:** A [Bubble Tea](https://github.com/charmbracelet/bubbletea)-based TUI streamer for Linux that talks to the same backend, with no GUI toolkit dependency.
+* **Terminal UI option:** An alternate to GUI, [Bubble Tea](https://github.com/charmbracelet/bubbletea)-based TUI streamer for Linux that talks to the same backend, with no GUI toolkit dependency.
 * **Small RAM Footprint:** Efficient Go-based runtime.
 
 ---
