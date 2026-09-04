@@ -17,6 +17,10 @@ jobs:
           - os: linux
             arch: amd64
             target: sonidex-linux-amd64
+          - os: linux
+            arch: amd64
+            target: sonidex-linux-wayland-amd64
+            tags: wayland
           - os: windows
             arch: amd64
             target: sonidex-windows-amd64.exe
@@ -34,7 +38,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libgl1-mesa-dev xorg-dev libasound2-dev gcc-mingw-w64
+            libgl1-mesa-dev xorg-dev libasound2-dev gcc-mingw-w64 \
+            libwayland-dev libxkbcommon-dev wayland-protocols
 
       - name: Regenerate Clean Checksums
         run: |
@@ -47,11 +52,15 @@ jobs:
           GOARCH: ${{ matrix.arch }}
           CGO_ENABLED: 1
         run: |
+          BUILD_TAGS=""
+          if [ -n "${{ matrix.tags }}" ]; then
+            BUILD_TAGS="-tags ${{ matrix.tags }}"
+          fi
           if [ "${{ matrix.os }}" = "windows" ]; then
             export CC=x86_64-w64-mingw32-gcc
-            go build -ldflags="-H windowsgui -s -w" -o ${{ matrix.target }} .
+            go build $BUILD_TAGS -ldflags="-H windowsgui -s -w" -o ${{ matrix.target }} .
           else
-            go build -ldflags="-s -w" -o ${{ matrix.target }} .
+            go build $BUILD_TAGS -ldflags="-s -w" -o ${{ matrix.target }} .
           fi
 
       - name: Upload Desktop Artifacts
@@ -59,6 +68,40 @@ jobs:
         with:
           name: ${{ matrix.target }}
           path: ${{ matrix.target }}
+
+  build-tui:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev
+
+      - name: Regenerate Clean Checksums
+        run: |
+          rm -f go.sum
+          go mod tidy
+
+      - name: Build Binary
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: 1
+        run: go build -ldflags="-s -w" -o sonidex-tui-linux-amd64 ./cmd/sonidex-tui
+
+      - name: Upload TUI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonidex-tui-linux-amd64
+          path: sonidex-tui-linux-amd64
 
   build-android:
     runs-on: ubuntu-latest
@@ -91,7 +134,7 @@ jobs:
 
   release:
     name: Tag and Release
-    needs: [build-desktop, build-android]
+    needs: [build-desktop, build-android, build-tui]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -109,7 +152,9 @@ jobs:
           mkdir -p release-assets
           find dist -type f \( \
             -name 'sonidex-linux-amd64' -o \
+            -name 'sonidex-linux-wayland-amd64' -o \
             -name 'sonidex-windows-amd64.exe' -o \
+            -name 'sonidex-tui-linux-amd64' -o \
             -name '*.apk' \
           \) -exec cp {} release-assets/ \;
           echo "Assets staged for release:"
