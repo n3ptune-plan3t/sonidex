@@ -81,6 +81,12 @@ func newGPUCheck(a fyne.App, status *widget.Label) *widget.Check {
 	return check
 }
 
+const (
+	modeUSBADB      = "USB / ADB"
+	modeWirelessADB = "Wireless ADB"
+	modeWiFiDirect  = "WiFi Direct (No ADB)"
+)
+
 func showStreamer(a fyne.App) {
 	myWindow := a.NewWindow("Sonidex Streamer")
 	statusLabel := widget.NewLabel("Ready")
@@ -108,6 +114,64 @@ func showStreamer(a fyne.App) {
 		deviceSelect.SetSelected(devices[0])
 		statusLabel.SetText("Select target device.")
 	}
+	refreshBtn := widget.NewButton("Refresh Devices", func() {
+		refreshDevices()
+	})
+
+	wirelessAddrEntry := widget.NewEntry()
+	wirelessAddrEntry.SetPlaceHolder("192.168.1.42:5555")
+	wirelessConnectBtn := widget.NewButton("Connect", func() {
+		addr := strings.TrimSpace(wirelessAddrEntry.Text)
+		if addr == "" {
+			statusLabel.SetText("Enter the device's ip:port first.")
+			return
+		}
+		if err := backend.ConnectWirelessADB(addr); err != nil {
+			statusLabel.SetText("Wireless adb connect failed.")
+			return
+		}
+		statusLabel.SetText("Connected. Select the device below.")
+		refreshDevices()
+	})
+	wirelessBox := container.NewVBox(
+		widget.NewLabel("Device ip:port (Wireless debugging):"),
+		wirelessAddrEntry,
+		wirelessConnectBtn,
+	)
+	wirelessBox.Hide()
+	
+	directIPEntry := widget.NewEntry()
+	directIPEntry.SetPlaceHolder("192.168.1.42")
+	directBox := container.NewVBox(
+		widget.NewLabel("Phone IP address (same WiFi network):"),
+		directIPEntry,
+	)
+	directBox.Hide()
+
+	adbDeviceBox := container.NewVBox(
+		widget.NewLabel("Android Target Device:"),
+		deviceSelect,
+		refreshBtn,
+	)
+
+	modeSelect := widget.NewSelect([]string{modeUSBADB, modeWirelessADB, modeWiFiDirect}, nil)
+	modeSelect.SetSelected(modeUSBADB)
+	modeSelect.OnChanged = func(mode string) {
+		wirelessBox.Hide()
+		directBox.Hide()
+		adbDeviceBox.Hide()
+		switch mode {
+		case modeWirelessADB:
+			wirelessBox.Show()
+			adbDeviceBox.Show()
+		case modeWiFiDirect:
+			directBox.Show()
+		default:
+			adbDeviceBox.Show()
+		}
+	}
+	modeSelect.OnChanged(modeUSBADB)
+
 	ctrl.button = widget.NewButton("Start Streaming", func() {
 		ctrl.mu.Lock()
 		if ctrl.running {
@@ -115,6 +179,7 @@ func showStreamer(a fyne.App) {
 			ctrl.cancel = nil
 			ctrl.running = false
 			serial := deviceSelect.Selected
+			mode := modeSelect.Selected
 			port := strings.TrimSpace(portEntry.Text)
 			if port == "" {
 				port = "8080"
@@ -123,7 +188,7 @@ func showStreamer(a fyne.App) {
 			if cancel != nil {
 				cancel()
 			}
-			if serial != "" {
+			if mode != modeWiFiDirect && serial != "" {
 				_ = backend.RemoveADBReverse(serial, port)
 			}
 			statusLabel.SetText("Stream stopped.")
@@ -134,34 +199,48 @@ func showStreamer(a fyne.App) {
 		if port == "" {
 			port = "8080"
 		}
-		serial := deviceSelect.Selected
-		if serial != "" {
-			if err := backend.SetupADBReverse(serial, port); err != nil {
+
+		var addr string
+		mode := modeSelect.Selected
+		switch mode {
+		case modeWiFiDirect:
+			ip := strings.TrimSpace(directIPEntry.Text)
+			if ip == "" {
 				ctrl.mu.Unlock()
-				statusLabel.SetText("ADB forward failed. Check USB debugging.")
+				statusLabel.SetText("Enter the phone's IP address.")
 				return
 			}
+			addr = ip + ":" + port
+		default:
+			serial := deviceSelect.Selected
+			if serial != "" {
+				if err := backend.SetupADBReverse(serial, port); err != nil {
+					ctrl.mu.Unlock()
+					statusLabel.SetText("ADB forward failed. Check USB debugging.")
+					return
+				}
+			}
+			addr = "127.0.0.1:" + port
 		}
+
 		sessCtx, sessCancel := context.WithCancel(context.Background())
 		ctrl.cancel = sessCancel
 		ctrl.running = true
 		ctrl.mu.Unlock()
 		statusLabel.SetText("Streaming active...")
 		ctrl.button.SetText("Stop Streaming")
-		addr := "127.0.0.1:" + port
 		go ctrl.loop(sessCtx, func(ctx context.Context) error {
 			return backend.StartDesktopStream(ctx, addr)
 		}, "Disconnected. Reconnecting (%d/%d)...", "Connection failed.", "Start Streaming")
 	})
-	refreshBtn := widget.NewButton("Refresh Devices", func() {
-		refreshDevices()
-	})
 	gpuCheck := newGPUCheck(a, statusLabel)
 	content := container.NewVBox(
 		widget.NewLabelWithStyle("Sonidex Streamer", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-		widget.NewLabel("Android Target Device:"),
-		deviceSelect,
-		refreshBtn,
+		widget.NewLabel("Connection Mode:"),
+		modeSelect,
+		wirelessBox,
+		directBox,
+		adbDeviceBox,
 		widget.NewLabel("Port:"),
 		portEntry,
 		gpuCheck,
@@ -169,7 +248,7 @@ func showStreamer(a fyne.App) {
 		ctrl.button,
 	)
 	myWindow.SetContent(content)
-	myWindow.Resize(fyne.NewSize(420, 400))
+	myWindow.Resize(fyne.NewSize(420, 520))
 	refreshDevices()
 	myWindow.ShowAndRun()
 }
