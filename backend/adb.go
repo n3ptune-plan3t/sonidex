@@ -26,6 +26,24 @@ func ListADBDevices() ([]string, error) {
 	return devices, nil
 }
 
+func ConnectWirelessADB(hostPort string) error {
+	cmd := exec.Command("adb", "connect", hostPort)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("adb connect failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	result := strings.ToLower(strings.TrimSpace(string(out)))
+	if strings.Contains(result, "unable to connect") || strings.Contains(result, "failed") || strings.Contains(result, "cannot connect") {
+		return fmt.Errorf("adb connect failed: %s", strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func DisconnectWirelessADB(hostPort string) error {
+	cmd := exec.Command("adb", "disconnect", hostPort)
+	return cmd.Run()
+}
+
 func SetupADBReverse(serial string, port string) error {
 	cmd := exec.Command("adb", "-s", serial, "forward", "tcp:"+port, "tcp:"+port)
 	return cmd.Run()
