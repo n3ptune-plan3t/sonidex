@@ -125,6 +125,31 @@ func StartLatencyEcho(ctx context.Context, port string) error {
 	}
 }
 
+func StartTCPSenderFromChan(ctx context.Context, addr string, ch <-chan []byte) error {
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	go func() {
+		<-ctx.Done()
+		_ = conn.Close()
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case buf := <-ch:
+			if _, err := conn.Write(buf); err != nil {
+				return err
+			}
+		}
+	}
+}
+
 func StartTCPSender(ctx context.Context, addr string, reader io.Reader) error {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", addr)
