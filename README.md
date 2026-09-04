@@ -6,11 +6,17 @@ The Linux and Windows builds are the **streamer** (capture system audio and send
 
 ---
 
+### Screenshots
+To be updated soon
+
+---
+
 ### Features
 * **Zero Terminal Setup:** Automatically discovers connected devices and provisions ADB tunnels behind the scenes.
 * **Lossless PCM:** Raw 48 kHz stereo streaming without compression overhead or fidelity loss.
-* **Cross-platform UI:** Lightweight Fyne GUI running natively across platforms, with an optional software-rendering mode that avoids GPU usage.
-* **Sub-50MB RAM Footprint:** Efficient Go-based runtime.
+* **Cross-platform UI:** Lightweight Fyne GUI running natively across platforms (Windows/Linux) and display servers (Xorg/XLibre/Wayland), with an optional software-rendering mode that avoids GPU usage.
+* **Terminal UI option:** A [Bubble Tea](https://github.com/charmbracelet/bubbletea)-based TUI streamer for Linux that talks to the same backend, with no GUI toolkit dependency.
+* **Small RAM Footprint:** Efficient Go-based runtime.
 
 ---
 
@@ -18,8 +24,11 @@ The Linux and Windows builds are the **streamer** (capture system audio and send
 
 Grab the binary for your platform — no local Go toolchain or compiling needed.
 
-* `sonidex-linux-amd64` / `sonidex-windows-amd64.exe`: streamer, run on the PC.
-* Sonidex `.apk`: receiver, install on the Android phone.
+* `sonidex-windows-amd64.exe`: GUI streamer, run on Windows.
+* `sonidex-linux-amd64`: GUI streamer, run on Xorg/XLibre on Linux.
+* `sonidex-linux-wayland-amd64`: GUI streamer built with the `wayland` tag for native Wayland sessions.
+* `sonidex-tui-linux-amd64`: terminal streamer for Linux — same streaming backend, no GUI toolkit.
+* `Sonidex.apk`: receiver, install on the Android phone.
 
 ---
 
@@ -43,16 +52,7 @@ Grab the binary for your platform — no local Go toolchain or compiling needed.
 
 ---
 
-### Recent fixes
-* **ADB tunnel direction:** the PC dials `127.0.0.1:<port>` and the phone listens, so tunnel setup now uses `adb forward` instead of `adb reverse` — the old direction left nothing listening on the host side and every connection attempt failed.
-* **Jitter buffer cap:** `AudioBuffer.Push` now actually enforces its size ceiling (append, then trim from the front) instead of a net-zero trim/append that let buffered latency grow unbounded over a session.
-* **Linux/BSD loopback capture:** `malgo.Loopback` only works via WASAPI on Windows. On Linux the app now enumerates capture devices and selects the PulseAudio/PipeWire `Monitor of ...` source explicitly instead of relying on a loopback device type that doesn't exist there.
-* **Role split:** Linux/Windows builds now open the streamer UI (system-audio capture, ADB forward, TCP send) while the Android build opens the receiver UI (TCP listen plus local playback), instead of every build opening the receiver.
-* **Receiver playback:** the Android side now actually plays the buffered stream through the default output device instead of receiving into a buffer that was never drained.
-
----
-
 ### Credits
 * UI Framework: [Fyne](https://fyne.io/) (MPL-2.0)
+* TUI Framework: [Bubble Tea](https://github.com/charmbracelet/bubbletea), [Bubbles](https://github.com/charmbracelet/bubbles), [Lip Gloss](https://github.com/charmbracelet/lipgloss) (MIT)
 * Audio Backend: [malgo / miniaudio](https://github.com/gen2brain/malgo) (MIT)
-* Application Icon: [Font Awesome](https://fontawesome.com/) (CC BY 4.0)
