@@ -2,7 +2,6 @@ package backend
 
 import (
 	"context"
-	"io"
 	"runtime"
 	"strings"
 	"sync"
@@ -141,26 +140,25 @@ func StartDesktopStream(ctx context.Context, addr string) error {
 	cfg.Capture.Format = malgo.FormatS16
 	cfg.Capture.Channels = 2
 	cfg.SampleRate = 48000
-	pr, pw := io.Pipe()
-	defer func() {
-		_ = pr.Close()
-		_ = pw.Close()
-	}()
-	go func() {
-		<-ctx.Done()
-		_ = pw.Close()
-		_ = pr.Close()
-	}()
+	ch := make(chan []byte, 16)
 	onRecv := func(_ []byte, pInput []byte, _ uint32) {
-		if len(pInput) == 0 {
-			return
-		}
-		if ctx.Err() != nil {
+		if len(pInput) == 0 || ctx.Err() != nil {
 			return
 		}
 		buf := make([]byte, len(pInput))
 		copy(buf, pInput)
-		_, _ = pw.Write(buf)
+		select {
+		case ch <- buf:
+		default:
+			select {
+			case <-ch:
+			default:
+			}
+			select {
+			case ch <- buf:
+			default:
+			}
+		}
 	}
 	device, err := malgo.InitDevice(mctx.Context, cfg, malgo.DeviceCallbacks{Data: onRecv})
 	if err != nil {
@@ -172,7 +170,7 @@ func StartDesktopStream(ctx context.Context, addr string) error {
 	}
 	senderDone := make(chan error, 1)
 	go func() {
-		senderDone <- StartTCPSender(ctx, addr, pr)
+		senderDone <- StartTCPSenderFromChan(ctx, addr, ch)
 	}()
 	select {
 	case <-ctx.Done():
