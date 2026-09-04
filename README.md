@@ -1,6 +1,8 @@
 # Sonidex
 
-Sonidex is an ultra-low-latency desktop-to-Android audio bridge that streams uncompressed 16-bit 48 kHz stereo PCM audio directly to your mobile device, with ~10–15 ms latency over a physical USB connection using automated ADB tunneling. (Wireless ADB and direct WiFi connections are also supported for cable-free setups, at the cost of some added latency and jitter compared to USB.)
+Sonidex is an ultra-low-latency desktop-to-Android audio bridge that streams uncompressed 16-bit 48 kHz stereo PCM audio directly to your mobile device, with ~10–15 ms latency over a physical USB connection using automated ADB tunneling.
+
+Wireless ADB and direct WiFi connections are also supported for cable-free setups, at the cost of some added latency and jitter compared to USB.
 
 The Linux and Windows builds are the **streamer** (capture system audio and send it). The Android build is the **receiver** (listen and play it).
 
