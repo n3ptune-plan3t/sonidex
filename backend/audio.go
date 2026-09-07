@@ -2,12 +2,23 @@ package backend
 
 import (
 	"context"
+	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/gen2brain/malgo"
 )
+
+func periodSizeFrames() uint32 {
+	if v := strings.TrimSpace(os.Getenv("SONIDEX_PERIOD_FRAMES")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return uint32(n)
+		}
+	}
+	return 480
+}
 
 type AudioBuffer struct {
 	mu       sync.Mutex
@@ -140,6 +151,7 @@ func StartDesktopStream(ctx context.Context, addr string) error {
 	cfg.Capture.Format = malgo.FormatS16
 	cfg.Capture.Channels = 2
 	cfg.SampleRate = 48000
+	cfg.PeriodSizeInFrames = periodSizeFrames()
 	ch := make(chan []byte, 16)
 	onRecv := func(_ []byte, pInput []byte, _ uint32) {
 		if len(pInput) == 0 || ctx.Err() != nil {
@@ -194,6 +206,7 @@ func StartReceiverWithPlayback(ctx context.Context, port string) error {
 	cfg.Playback.Format = malgo.FormatS16
 	cfg.Playback.Channels = 2
 	cfg.SampleRate = 48000
+	cfg.PeriodSizeInFrames = periodSizeFrames()
 	onSend := func(pOutput []byte, _ []byte, _ uint32) {
 		n := ab.Pop(pOutput)
 		for i := n; i < len(pOutput); i++ {
