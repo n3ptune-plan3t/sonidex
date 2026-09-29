@@ -172,6 +172,15 @@ func showStreamer(a fyne.App) {
 	}
 	modeSelect.OnChanged(modeUSBADB)
 
+	profileSelect := widget.NewSelect(backend.ProfileNames, func(name string) {
+		a.Preferences().SetString("profile", name)
+	})
+	profileSelect.SetSelected(a.Preferences().StringWithFallback("profile", backend.ProfileNames[backend.ProfileLowLatency]))
+	silenceCheck := widget.NewCheck("Pause sending while silent (saves power)", func(on bool) {
+		a.Preferences().SetBool("silence_suppress", on)
+	})
+	silenceCheck.SetChecked(a.Preferences().BoolWithFallback("silence_suppress", backend.DefaultStreamOptions().SuppressSilence))
+
 	ctrl.button = widget.NewButton("Start Streaming", func() {
 		ctrl.mu.Lock()
 		if ctrl.running {
@@ -229,8 +238,12 @@ func showStreamer(a fyne.App) {
 		ctrl.mu.Unlock()
 		statusLabel.SetText("Streaming active...")
 		ctrl.button.SetText("Stop Streaming")
+		opts := backend.StreamOptions{
+			Profile:         backend.ProfileFromName(profileSelect.Selected),
+			SuppressSilence: silenceCheck.Checked,
+		}
 		go ctrl.loop(sessCtx, func(ctx context.Context) error {
-			return backend.StartDesktopStream(ctx, addr)
+			return backend.StartDesktopStreamOpts(ctx, addr, opts)
 		}, "Disconnected. Reconnecting (%d/%d)...", "Connection failed.", "Start Streaming")
 	})
 	gpuCheck := newGPUCheck(a, statusLabel)
@@ -243,12 +256,15 @@ func showStreamer(a fyne.App) {
 		adbDeviceBox,
 		widget.NewLabel("Port:"),
 		portEntry,
+		widget.NewLabel("Latency / power profile:"),
+		profileSelect,
+		silenceCheck,
 		gpuCheck,
 		statusLabel,
 		ctrl.button,
 	)
 	myWindow.SetContent(content)
-	myWindow.Resize(fyne.NewSize(420, 520))
+	myWindow.Resize(fyne.NewSize(420, 600))
 	refreshDevices()
 	myWindow.ShowAndRun()
 }

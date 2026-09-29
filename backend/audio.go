@@ -7,17 +7,106 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gen2brain/malgo"
 )
 
-func periodSizeFrames() uint32 {
+// Profile trades end-to-end latency for host wakeups (and so battery).
+// Every capture period is one wakeup of the audio server, this process and
+// the network stack, so a bigger period means fewer wakeups and deeper CPU
+// sleep states.
+type Profile int
+
+const (
+	ProfileLowLatency   Profile = iota // 10 ms period, ~100 wakeups/s
+	ProfileBalanced                    // 20 ms period, ~50 wakeups/s
+	ProfileBatterySaver                // 40 ms period, ~25 wakeups/s
+)
+
+var ProfileNames = []string{
+	"Low latency (10 ms)",
+	"Balanced (20 ms)",
+	"Battery saver (40 ms)",
+}
+
+func (p Profile) String() string {
+	if int(p) >= 0 && int(p) < len(ProfileNames) {
+		return ProfileNames[p]
+	}
+	return ProfileNames[ProfileLowLatency]
+}
+
+func (p Profile) Next() Profile { return (p + 1) % Profile(len(ProfileNames)) }
+
+// ProfileFromName maps a UI label back to a Profile (unknown -> low latency).
+func ProfileFromName(name string) Profile {
+	for i, n := range ProfileNames {
+		if n == name {
+			return Profile(i)
+		}
+	}
+	return ProfileLowLatency
+}
+
+func (p Profile) frames() uint32 {
+	switch p {
+	case ProfileBalanced:
+		return 960
+	case ProfileBatterySaver:
+		return 1920
+	default:
+		return 480
+	}
+}
+
+// periodSizeFrames: SONIDEX_PERIOD_FRAMES (if set) always wins, otherwise the
+// profile decides. The receiver keeps using the low-latency default.
+func periodSizeFrames(p Profile) uint32 {
 	if v := strings.TrimSpace(os.Getenv("SONIDEX_PERIOD_FRAMES")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			return uint32(n)
 		}
 	}
-	return 480
+	return p.frames()
+}
+
+// StreamOptions configures the desktop (streamer) side.
+type StreamOptions struct {
+	Profile Profile
+	// SuppressSilence stops transmitting once the captured audio has been
+	// digitally silent for a while and resumes instantly on sound. The
+	// receiver already outputs zeros when its buffer runs dry, so no protocol
+	// change is needed. Keeps the WiFi radio / USB link idle while nothing plays.
+	SuppressSilence bool
+}
+
+func DefaultStreamOptions() StreamOptions {
+	return StreamOptions{
+		Profile:         ProfileLowLatency,
+		SuppressSilence: os.Getenv("SONIDEX_SILENCE_SUPPRESS") != "0",
+	}
+}
+
+const (
+	// |sample| <= silenceThreshold counts as silence (~ -78 dBFS).
+	silenceThreshold = 4
+	// Keep sending this long after the last audible sample so track gaps and
+	// fade-out tails are never chopped.
+	silenceHangover = 750 * time.Millisecond
+	sampleRate      = 48000
+	bytesPerFrame   = 4 // S16 stereo
+)
+
+// isSilent reports whether every little-endian S16 sample in p is inaudible.
+func isSilent(p []byte) bool {
+	for i := 0; i+1 < len(p); i += 2 {
+		v := int16(uint16(p[i]) | uint16(p[i+1])<<8)
+		if v > silenceThreshold || v < -silenceThreshold {
+			return false
+		}
+	}
+	return true
 }
 
 type AudioBuffer struct {
@@ -119,7 +208,12 @@ func ListCaptureSources() ([]string, error) {
 	return names, nil
 }
 
+// StartDesktopStream streams with the default options (kept for compatibility).
 func StartDesktopStream(ctx context.Context, addr string) error {
+	return StartDesktopStreamOpts(ctx, addr, DefaultStreamOptions())
+}
+
+func StartDesktopStreamOpts(ctx context.Context, addr string, opts StreamOptions) error {
 	mctx, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
 	if err != nil {
 		return err
@@ -150,25 +244,62 @@ func StartDesktopStream(ctx context.Context, addr string) error {
 	}
 	cfg.Capture.Format = malgo.FormatS16
 	cfg.Capture.Channels = 2
-	cfg.SampleRate = 48000
-	cfg.PeriodSizeInFrames = periodSizeFrames()
-	ch := make(chan []byte, 16)
+	cfg.SampleRate = sampleRate
+	cfg.PeriodSizeInFrames = periodSizeFrames(opts.Profile)
+
+	const chanDepth = 16
+	ch := make(chan []byte, chanDepth)
+	// Recycled buffers: the capture callback runs every period, so allocating
+	// there would churn the GC (and wake the runtime) for no reason.
+	free := make(chan []byte, chanDepth*2)
+	getBuf := func(n int) []byte {
+		select {
+		case b := <-free:
+			if cap(b) >= n {
+				return b[:n]
+			}
+		default:
+		}
+		return make([]byte, n)
+	}
+	release := func(b []byte) {
+		select {
+		case free <- b[:cap(b)]:
+		default:
+		}
+	}
+
+	// Only touched from the (single) miniaudio capture thread.
+	var quietFor time.Duration
 	onRecv := func(_ []byte, pInput []byte, _ uint32) {
 		if len(pInput) == 0 || ctx.Err() != nil {
 			return
 		}
-		buf := make([]byte, len(pInput))
+		if opts.SuppressSilence {
+			if isSilent(pInput) {
+				quietFor += time.Duration(len(pInput)/bytesPerFrame) * time.Second / sampleRate
+				if quietFor > silenceHangover {
+					return // nothing audible: send nothing, wake nobody
+				}
+			} else {
+				quietFor = 0
+			}
+		}
+		buf := getBuf(len(pInput))
 		copy(buf, pInput)
 		select {
 		case ch <- buf:
 		default:
+			// Sender is behind: drop the oldest chunk to bound latency.
 			select {
-			case <-ch:
+			case old := <-ch:
+				release(old)
 			default:
 			}
 			select {
 			case ch <- buf:
 			default:
+				release(buf)
 			}
 		}
 	}
@@ -182,7 +313,7 @@ func StartDesktopStream(ctx context.Context, addr string) error {
 	}
 	senderDone := make(chan error, 1)
 	go func() {
-		senderDone <- StartTCPSenderFromChan(ctx, addr, ch)
+		senderDone <- startTCPSender(ctx, addr, ch, release)
 	}()
 	select {
 	case <-ctx.Done():
@@ -206,7 +337,7 @@ func StartReceiverWithPlayback(ctx context.Context, port string) error {
 	cfg.Playback.Format = malgo.FormatS16
 	cfg.Playback.Channels = 2
 	cfg.SampleRate = 48000
-	cfg.PeriodSizeInFrames = periodSizeFrames()
+	cfg.PeriodSizeInFrames = periodSizeFrames(ProfileLowLatency)
 	onSend := func(pOutput []byte, _ []byte, _ uint32) {
 		n := ab.Pop(pOutput)
 		for i := n; i < len(pOutput); i++ {

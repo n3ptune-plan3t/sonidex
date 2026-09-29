@@ -45,6 +45,13 @@ Grab the binary for your platform — no local Go toolchain or compiling needed.
 * You can also force software rendering before first launch with the environment variable `SONIDEX_NO_GPU=1`.
 ---
 
+### Power / battery
+Every capture period wakes the audio server, this process and the network stack, so the period size is the main battery lever on a laptop.
+* **Latency / power profile** (GUI dropdown, `l` in the TUI): *Low latency* (10 ms, default), *Balanced* (20 ms), *Battery saver* (40 ms). `SONIDEX_PERIOD_FRAMES` still overrides it.
+* **Pause sending while silent** (GUI checkbox, `s` in the TUI, `SONIDEX_SILENCE_SUPPRESS=0` to disable): after ~0.75 s of digital silence nothing is sent until sound resumes, so the WiFi radio/USB link can idle. The receiver needs no changes.
+* The TUI build avoids the GUI toolkit's always-on 60 Hz event loop and is the lightest option on battery.
+---
+
 ### Credits
 * UI Framework: [Fyne](https://fyne.io/) (MPL-2.0)
 * TUI Framework: [Bubble Tea](https://github.com/charmbracelet/bubbletea), [Bubbles](https://github.com/charmbracelet/bubbles), [Lip Gloss](https://github.com/charmbracelet/lipgloss) (MIT)

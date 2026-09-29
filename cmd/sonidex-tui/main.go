@@ -82,6 +82,8 @@ type model struct {
 	statusCh     chan statusMsg
 	logs         []string
 	lastErr      string
+	profile      backend.Profile
+	silenceSkip  bool
 }
 
 func initialModel() model {
@@ -104,6 +106,7 @@ func initialModel() model {
 		wirelessAddr: wa,
 		directIP:     di,
 		statusCh:     make(chan statusMsg, 32),
+		silenceSkip:  backend.DefaultStreamOptions().SuppressSilence,
 	}
 }
 
@@ -175,7 +178,7 @@ func (m *model) pushLog(s string) {
 	}
 }
 
-func runLoop(ctx context.Context, addr string, statusCh chan statusMsg, done chan streamStoppedMsg) {
+func runLoop(ctx context.Context, addr string, opts backend.StreamOptions, statusCh chan statusMsg, done chan streamStoppedMsg) {
 	maxRetries := 5
 	backoff := 500 * time.Millisecond
 	for attempt := 1; attempt <= maxRetries; attempt++ {
@@ -183,7 +186,7 @@ func runLoop(ctx context.Context, addr string, statusCh chan statusMsg, done cha
 			done <- streamStoppedMsg{}
 			return
 		}
-		err := backend.StartDesktopStream(ctx, addr)
+		err := backend.StartDesktopStreamOpts(ctx, addr, opts)
 		if err == nil || ctx.Err() != nil {
 			done <- streamStoppedMsg{}
 			return
@@ -224,6 +227,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.applyFocus()
 			}
 			return m, nil
+		case "l":
+			if !m.running && m.focus == focusDevices {
+				m.profile = m.profile.Next()
+				return m, nil
+			}
+		case "s":
+			if !m.running && m.focus == focusDevices {
+				m.silenceSkip = !m.silenceSkip
+				return m, nil
+			}
 		case "c":
 			if m.mode == modeWirelessADB && m.focus == focusWirelessAddr {
 				addr := strings.TrimSpace(m.wirelessAddr.Value())
@@ -352,7 +365,7 @@ func (m model) toggleStream() (tea.Model, tea.Cmd) {
 	m.pushLog("streaming to " + label + " on port " + port)
 
 	done := make(chan streamStoppedMsg, 1)
-	go runLoop(ctx, addr, m.statusCh, done)
+	go runLoop(ctx, addr, backend.StreamOptions{Profile: m.profile, SuppressSilence: m.silenceSkip}, m.statusCh, done)
 
 	return m, func() tea.Msg { return <-done }
 }
@@ -388,6 +401,12 @@ func (m model) View() string {
 	}
 
 	b.WriteString(dimStyle.Render("Port: ") + m.port.View() + "\n\n")
+	silence := "off"
+	if m.silenceSkip {
+		silence = "on"
+	}
+	b.WriteString(dimStyle.Render("Profile (l): ") + selectedStyle.Render(m.profile.String()) +
+		dimStyle.Render("   Pause on silence (s): ") + selectedStyle.Render(silence) + "\n\n")
 
 	status := "Ready"
 	statusStyle := dimStyle
@@ -409,7 +428,7 @@ func (m model) View() string {
 	if m.running {
 		action = "enter: stop streaming"
 	}
-	b.WriteString(helpStyle.Render(fmt.Sprintf("↑/↓: select · r: refresh · tab: next field · m: mode · %s · q: quit", action)))
+	b.WriteString(helpStyle.Render(fmt.Sprintf("↑/↓: select · r: refresh · tab: next field · m: mode · l: profile · s: silence · %s · q: quit", action)))
 
 	return b.String()
 }

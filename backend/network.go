@@ -126,12 +126,21 @@ func StartLatencyEcho(ctx context.Context, port string) error {
 }
 
 func StartTCPSenderFromChan(ctx context.Context, addr string, ch <-chan []byte) error {
+	return startTCPSender(ctx, addr, ch, nil)
+}
+
+// startTCPSender writes chunks from ch to addr; release (optional) gets each
+// buffer back once it has been written so the producer can reuse it.
+func startTCPSender(ctx context.Context, addr string, ch <-chan []byte, release func([]byte)) error {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
+	if tc, ok := conn.(*net.TCPConn); ok {
+		_ = tc.SetNoDelay(true)
+	}
 
 	go func() {
 		<-ctx.Done()
@@ -143,7 +152,11 @@ func StartTCPSenderFromChan(ctx context.Context, addr string, ch <-chan []byte) 
 		case <-ctx.Done():
 			return nil
 		case buf := <-ch:
-			if _, err := conn.Write(buf); err != nil {
+			_, err := conn.Write(buf)
+			if release != nil {
+				release(buf)
+			}
+			if err != nil {
 				return err
 			}
 		}

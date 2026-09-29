@@ -7,6 +7,17 @@ on:
         description: 'Release version tag (e.g. v1.0.0)'
         required: true
         type: string
+      compiler:
+        description: 'C compiler for the Linux (cgo/miniaudio) builds'
+        required: false
+        type: choice
+        default: gcc
+        options: [gcc, clang]
+      znver1:
+        description: 'Also build extra Linux binaries tuned for AMD Zen 1 (-march=znver1, GOAMD64=v3)'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   build-desktop:
@@ -40,6 +51,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libgl1-mesa-dev xorg-dev libasound2-dev gcc-mingw-w64 \
             libwayland-dev libxkbcommon-dev wayland-protocols
+          if [ "${{ inputs.compiler }}" = "clang" ]; then
+            sudo apt-get install -y --no-install-recommends clang
+          fi
 
       - name: Regenerate Clean Checksums
         run: |
@@ -60,7 +74,8 @@ jobs:
             export CC=x86_64-w64-mingw32-gcc
             go build $BUILD_TAGS -ldflags="-H windowsgui -s -w" -o ${{ matrix.target }} .
           else
-            go build $BUILD_TAGS -ldflags="-s -w" -o ${{ matrix.target }} .
+            if [ "${{ inputs.compiler }}" = "clang" ]; then export CC=clang; fi
+            go build -trimpath $BUILD_TAGS -ldflags="-s -w" -o ${{ matrix.target }} .
           fi
 
       - name: Upload Desktop Artifacts
@@ -84,6 +99,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libasound2-dev
+          if [ "${{ inputs.compiler }}" = "clang" ]; then
+            sudo apt-get install -y --no-install-recommends clang
+          fi
 
       - name: Regenerate Clean Checksums
         run: |
@@ -95,13 +113,76 @@ jobs:
           GOOS: linux
           GOARCH: amd64
           CGO_ENABLED: 1
-        run: go build -ldflags="-s -w" -o sonidex-tui-linux-amd64 ./cmd/sonidex-tui
+        run: |
+          if [ "${{ inputs.compiler }}" = "clang" ]; then export CC=clang; fi
+          go build -trimpath -ldflags="-s -w" -o sonidex-tui-linux-amd64 ./cmd/sonidex-tui
 
       - name: Upload TUI Artifact
         uses: actions/upload-artifact@v4
         with:
           name: sonidex-tui-linux-amd64
           path: sonidex-tui-linux-amd64
+
+  build-znver1:
+    # Opt-in: Zen 1 tuned Linux builds. These use AVX2/BMI2/FMA (GOAMD64=v3)
+    # and SSE4A etc. from -march=znver1, so they will NOT run on Intel CPUs
+    # or pre-Zen AMD. They are extra artifacts; the generic builds stay as-is.
+    if: ${{ inputs.znver1 }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: sonidex-linux-znver1-amd64
+            pkg: .
+          - target: sonidex-linux-wayland-znver1-amd64
+            pkg: .
+            tags: wayland
+          - target: sonidex-tui-linux-znver1-amd64
+            pkg: ./cmd/sonidex-tui
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1-mesa-dev xorg-dev libasound2-dev \
+            libwayland-dev libxkbcommon-dev wayland-protocols
+          if [ "${{ inputs.compiler }}" = "clang" ]; then
+            sudo apt-get install -y --no-install-recommends clang
+          fi
+
+      - name: Regenerate Clean Checksums
+        run: |
+          rm -f go.sum
+          go mod tidy
+
+      - name: Build Binary (znver1)
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          GOAMD64: v3
+          CGO_ENABLED: 1
+          CGO_CFLAGS: -O2 -march=znver1 -mtune=znver1
+        run: |
+          if [ "${{ inputs.compiler }}" = "clang" ]; then export CC=clang; fi
+          BUILD_TAGS=""
+          if [ -n "${{ matrix.tags }}" ]; then
+            BUILD_TAGS="-tags ${{ matrix.tags }}"
+          fi
+          go build -trimpath $BUILD_TAGS -ldflags="-s -w" -o ${{ matrix.target }} ${{ matrix.pkg }}
+
+      - name: Upload znver1 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ matrix.target }}
 
   build-android:
     runs-on: ubuntu-latest
@@ -134,7 +215,9 @@ jobs:
 
   release:
     name: Tag and Release
-    needs: [build-desktop, build-android, build-tui]
+    needs: [build-desktop, build-android, build-tui, build-znver1]
+    # build-znver1 is skipped unless requested; that must not block the release.
+    if: ${{ !cancelled() && needs.build-desktop.result == 'success' && needs.build-android.result == 'success' && needs.build-tui.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.build-znver1.result) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -155,6 +238,9 @@ jobs:
             -name 'sonidex-linux-wayland-amd64' -o \
             -name 'sonidex-windows-amd64.exe' -o \
             -name 'sonidex-tui-linux-amd64' -o \
+            -name 'sonidex-linux-znver1-amd64' -o \
+            -name 'sonidex-linux-wayland-znver1-amd64' -o \
+            -name 'sonidex-tui-linux-znver1-amd64' -o \
             -name '*.apk' \
           \) -exec cp {} release-assets/ \;
           echo "Assets staged for release:"
