@@ -19,6 +19,10 @@ on:
         type: boolean
         default: false
 
+env:
+  # Fall back to a mirror when proxy.golang.org drops streams (INTERNAL_ERROR)
+  GOPROXY: https://proxy.golang.org,https://goproxy.io,direct
+
 jobs:
   build-desktop:
     runs-on: ubuntu-latest
@@ -55,10 +59,16 @@ jobs:
             sudo apt-get install -y --no-install-recommends clang
           fi
 
-      - name: Regenerate Clean Checksums
+      - name: Regenerate Clean Checksums (with retries)
         run: |
           rm -f go.sum
-          go mod tidy
+          ok=0
+          for i in 1 2 3 4 5; do
+            if go mod tidy && go mod download; then ok=1; break; fi
+            echo "go mod tidy failed (attempt $i), retrying..."
+            sleep $((i * 10))
+          done
+          [ "$ok" = 1 ] || exit 1
 
       - name: Build Binary
         env:
@@ -74,7 +84,10 @@ jobs:
             export CC=x86_64-w64-mingw32-gcc
             go build $BUILD_TAGS -ldflags="-H windowsgui -s -w" -o ${{ matrix.target }} .
           else
-            if [ "${{ inputs.compiler }}" = "clang" ]; then export CC=clang; fi
+            if [ "${{ inputs.compiler }}" = "clang" ]; then
+              export CC=clang
+              export CGO_CFLAGS="${CGO_CFLAGS} -D_GNU_SOURCE"
+            fi
             go build -trimpath $BUILD_TAGS -ldflags="-s -w" -o ${{ matrix.target }} .
           fi
 
@@ -103,10 +116,16 @@ jobs:
             sudo apt-get install -y --no-install-recommends clang
           fi
 
-      - name: Regenerate Clean Checksums
+      - name: Regenerate Clean Checksums (with retries)
         run: |
           rm -f go.sum
-          go mod tidy
+          ok=0
+          for i in 1 2 3 4 5; do
+            if go mod tidy && go mod download; then ok=1; break; fi
+            echo "go mod tidy failed (attempt $i), retrying..."
+            sleep $((i * 10))
+          done
+          [ "$ok" = 1 ] || exit 1
 
       - name: Build Binary
         env:
@@ -158,10 +177,16 @@ jobs:
             sudo apt-get install -y --no-install-recommends clang
           fi
 
-      - name: Regenerate Clean Checksums
+      - name: Regenerate Clean Checksums (with retries)
         run: |
           rm -f go.sum
-          go mod tidy
+          ok=0
+          for i in 1 2 3 4 5; do
+            if go mod tidy && go mod download; then ok=1; break; fi
+            echo "go mod tidy failed (attempt $i), retrying..."
+            sleep $((i * 10))
+          done
+          [ "$ok" = 1 ] || exit 1
 
       - name: Build Binary (znver1)
         env:
@@ -169,7 +194,7 @@ jobs:
           GOARCH: amd64
           GOAMD64: v3
           CGO_ENABLED: 1
-          CGO_CFLAGS: -O2 -march=znver1 -mtune=znver1
+          CGO_CFLAGS: -O2 -march=znver1 -mtune=znver1 -D_GNU_SOURCE
         run: |
           if [ "${{ inputs.compiler }}" = "clang" ]; then export CC=clang; fi
           BUILD_TAGS=""
@@ -195,10 +220,16 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Regenerate Clean Checksums
+      - name: Regenerate Clean Checksums (with retries)
         run: |
           rm -f go.sum
-          go mod tidy
+          ok=0
+          for i in 1 2 3 4 5; do
+            if go mod tidy && go mod download; then ok=1; break; fi
+            echo "go mod tidy failed (attempt $i), retrying..."
+            sleep $((i * 10))
+          done
+          [ "$ok" = 1 ] || exit 1
 
       - name: Install fyne-cross
         run: go install github.com/fyne-io/fyne-cross@latest
