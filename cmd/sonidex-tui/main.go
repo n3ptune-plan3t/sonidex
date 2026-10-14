@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -434,6 +436,9 @@ func (m model) View() string {
 }
 
 func main() {
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(50)
+	}
 	p := tea.NewProgram(initialModel())
 	if _, err := p.Run(); err != nil {
 		fmt.Println("error:", err)

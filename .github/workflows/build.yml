@@ -75,6 +75,7 @@ jobs:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
           CGO_ENABLED: 1
+          CGO_CFLAGS: -O2 -DNDEBUG
         run: |
           BUILD_TAGS=""
           if [ -n "${{ matrix.tags }}" ]; then
@@ -82,7 +83,7 @@ jobs:
           fi
           if [ "${{ matrix.os }}" = "windows" ]; then
             export CC=x86_64-w64-mingw32-gcc
-            go build $BUILD_TAGS -ldflags="-H windowsgui -s -w" -o ${{ matrix.target }} .
+            go build -trimpath $BUILD_TAGS -ldflags="-H windowsgui -s -w" -o ${{ matrix.target }} .
           else
             if [ "${{ inputs.compiler }}" = "clang" ]; then
               export CC=clang
@@ -132,8 +133,12 @@ jobs:
           GOOS: linux
           GOARCH: amd64
           CGO_ENABLED: 1
+          CGO_CFLAGS: -O2 -DNDEBUG
         run: |
-          if [ "${{ inputs.compiler }}" = "clang" ]; then export CC=clang; fi
+          if [ "${{ inputs.compiler }}" = "clang" ]; then
+            export CC=clang
+            export CGO_CFLAGS="${CGO_CFLAGS} -D_GNU_SOURCE"
+          fi
           go build -trimpath -ldflags="-s -w" -o sonidex-tui-linux-amd64 ./cmd/sonidex-tui
 
       - name: Upload TUI Artifact
@@ -194,7 +199,7 @@ jobs:
           GOARCH: amd64
           GOAMD64: v3
           CGO_ENABLED: 1
-          CGO_CFLAGS: -O2 -march=znver1 -mtune=znver1 -D_GNU_SOURCE
+          CGO_CFLAGS: -O2 -DNDEBUG -march=znver1 -mtune=znver1 -D_GNU_SOURCE
         run: |
           if [ "${{ inputs.compiler }}" = "clang" ]; then export CC=clang; fi
           BUILD_TAGS=""

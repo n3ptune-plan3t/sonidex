@@ -51,19 +51,35 @@ func StartTCPReceiver(ctx context.Context, port string, ab *AudioBuffer, periodB
 				connMu.Unlock()
 			}()
 
-			buf := make([]byte, periodBytes)
+			// Read available socket data in larger chunks (up to 8 KB) aligned to
+			// 4-byte stereo S16 frames to minimize read() syscalls and mutex locks.
+			readSize := 8192
+			if periodBytes > readSize {
+				readSize = (periodBytes + 3) &^ 3
+			}
+			buf := make([]byte, readSize)
+			var rem int
 
 			for {
-				select {
-				case <-ctx.Done():
+				if ctx.Err() != nil {
 					return
-				default:
 				}
 
-				if _, err := io.ReadFull(conn, buf); err != nil {
+				n, err := conn.Read(buf[rem:])
+				if n > 0 {
+					total := rem + n
+					aligned := total &^ 3 // 4 bytes per stereo S16 frame
+					if aligned > 0 {
+						ab.Push(buf[:aligned])
+					}
+					rem = total - aligned
+					if rem > 0 {
+						copy(buf[:rem], buf[aligned:total])
+					}
+				}
+				if err != nil {
 					return
 				}
-				ab.Push(buf)
 			}
 		}(c)
 	}
@@ -129,18 +145,20 @@ func StartTCPSenderFromChan(ctx context.Context, addr string, ch <-chan []byte) 
 	return startTCPSender(ctx, addr, ch, nil)
 }
 
-// startTCPSender writes chunks from ch to addr; release (optional) gets each
-// buffer back once it has been written so the producer can reuse it.
-func startTCPSender(ctx context.Context, addr string, ch <-chan []byte, release func([]byte)) error {
+func dialTCPSender(ctx context.Context, addr string) (net.Conn, error) {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer conn.Close()
 	if tc, ok := conn.(*net.TCPConn); ok {
 		_ = tc.SetNoDelay(true)
 	}
+	return conn, nil
+}
+
+func sendTCPConn(ctx context.Context, conn net.Conn, ch <-chan []byte, release func([]byte)) error {
+	defer conn.Close()
 
 	go func() {
 		<-ctx.Done()
@@ -161,6 +179,16 @@ func startTCPSender(ctx context.Context, addr string, ch <-chan []byte, release 
 			}
 		}
 	}
+}
+
+// startTCPSender writes chunks from ch to addr; release (optional) gets each
+// buffer back once it has been written so the producer can reuse it.
+func startTCPSender(ctx context.Context, addr string, ch <-chan []byte, release func([]byte)) error {
+	conn, err := dialTCPSender(ctx, addr)
+	if err != nil {
+		return err
+	}
+	return sendTCPConn(ctx, conn, ch, release)
 }
 
 func StartTCPSender(ctx context.Context, addr string, reader io.Reader) error {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,11 @@ func applySoftwareRendering() {
 	_ = os.Setenv("SONIDEX_NO_GPU", "1")
 	_ = os.Setenv("LIBGL_ALWAYS_SOFTWARE", "1")
 	_ = os.Setenv("GALLIUM_DRIVER", "llvmpipe")
+	// Cap llvmpipe rasterizer worker threads so software rendering does not
+	// spawn threads across every logical CPU core.
+	if os.Getenv("LP_NUM_THREADS") == "" {
+		_ = os.Setenv("LP_NUM_THREADS", "2")
+	}
 }
 
 type sessionController struct {
@@ -139,7 +145,7 @@ func showStreamer(a fyne.App) {
 		wirelessConnectBtn,
 	)
 	wirelessBox.Hide()
-	
+
 	directIPEntry := widget.NewEntry()
 	directIPEntry.SetPlaceHolder("192.168.1.42")
 	directBox := container.NewVBox(
@@ -318,6 +324,9 @@ func showReceiver(a fyne.App) {
 }
 
 func main() {
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(50)
+	}
 	if softwareRenderingRequested() {
 		applySoftwareRendering()
 	}

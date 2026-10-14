@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gen2brain/malgo"
@@ -96,11 +97,24 @@ const (
 	silenceHangover = 750 * time.Millisecond
 	sampleRate      = 48000
 	bytesPerFrame   = 4 // S16 stereo
+
+	// Receiver ring buffer holds 250 ms of 48 kHz S16 stereo audio (48 KB
+	// instead of 384 KB) to save RAM and cap jitter-induced latency buildup.
+	receiverBufferBytes = 48000
+	// Pause the receiver playback device after ~1 s (100 x 10 ms periods) of
+	// empty buffer so the Android audio HAL and CPU can sleep during silence.
+	receiverIdlePeriods = 100
 )
 
 // isSilent reports whether every little-endian S16 sample in p is inaudible.
 func isSilent(p []byte) bool {
 	for i := 0; i+1 < len(p); i += 2 {
+		// Fast-path: check 4 stereo samples (8 bytes) at once for digital zero.
+		if i+8 <= len(p) &&
+			p[i]|p[i+1]|p[i+2]|p[i+3]|p[i+4]|p[i+5]|p[i+6]|p[i+7] == 0 {
+			i += 6
+			continue
+		}
 		v := int16(uint16(p[i]) | uint16(p[i+1])<<8)
 		if v > silenceThreshold || v < -silenceThreshold {
 			return false
@@ -116,6 +130,7 @@ type AudioBuffer struct {
 	tail     int
 	size     int
 	capacity int
+	wakeCh   chan struct{}
 }
 
 func minInt(a, b int) int {
@@ -129,16 +144,16 @@ func NewAudioBuffer(capacity int) *AudioBuffer {
 	return &AudioBuffer{
 		buf:      make([]byte, capacity),
 		capacity: capacity,
+		wakeCh:   make(chan struct{}, 1),
 	}
 }
 
 func (b *AudioBuffer) Push(p []byte) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	n := len(p)
 	if n == 0 {
 		return
 	}
+	b.mu.Lock()
 	if n > b.capacity {
 		p = p[n-b.capacity:]
 		n = b.capacity
@@ -155,6 +170,12 @@ func (b *AudioBuffer) Push(p []byte) {
 	}
 	b.head = (b.head + n) % b.capacity
 	b.size += n
+	b.mu.Unlock()
+
+	select {
+	case b.wakeCh <- struct{}{}:
+	default:
+	}
 }
 
 func (b *AudioBuffer) Pop(p []byte) int {
@@ -214,6 +235,14 @@ func StartDesktopStream(ctx context.Context, addr string) error {
 }
 
 func StartDesktopStreamOpts(ctx context.Context, addr string, opts StreamOptions) error {
+	// Dial TCP first so failed reconnect attempts do not spin up and tear down
+	// the OS audio server (PulseAudio/PipeWire/WASAPI) unnecessarily.
+	conn, err := dialTCPSender(ctx, addr)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
 	mctx, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
 	if err != nil {
 		return err
@@ -248,10 +277,22 @@ func StartDesktopStreamOpts(ctx context.Context, addr string, opts StreamOptions
 	cfg.PeriodSizeInFrames = periodSizeFrames(opts.Profile)
 
 	const chanDepth = 16
+	const poolSlots = chanDepth * 2
+	chunkBytes := int(cfg.PeriodSizeInFrames) * bytesPerFrame
+	if chunkBytes <= 0 {
+		chunkBytes = 1920
+	}
+
 	ch := make(chan []byte, chanDepth)
-	// Recycled buffers: the capture callback runs every period, so allocating
-	// there would churn the GC (and wake the runtime) for no reason.
-	free := make(chan []byte, chanDepth*2)
+	// Pre-allocate a single contiguous slab for recycled capture buffers to
+	// avoid per-period heap allocations and reduce GC pointer scanning.
+	free := make(chan []byte, poolSlots)
+	slab := make([]byte, poolSlots*chunkBytes)
+	for i := 0; i < poolSlots; i++ {
+		off := i * chunkBytes
+		free <- slab[off : off+chunkBytes : off+chunkBytes]
+	}
+
 	getBuf := func(n int) []byte {
 		select {
 		case b := <-free:
@@ -263,9 +304,11 @@ func StartDesktopStreamOpts(ctx context.Context, addr string, opts StreamOptions
 		return make([]byte, n)
 	}
 	release := func(b []byte) {
-		select {
-		case free <- b[:cap(b)]:
-		default:
+		if cap(b) > 0 {
+			select {
+			case free <- b[:cap(b)]:
+			default:
+			}
 		}
 	}
 
@@ -313,7 +356,7 @@ func StartDesktopStreamOpts(ctx context.Context, addr string, opts StreamOptions
 	}
 	senderDone := make(chan error, 1)
 	go func() {
-		senderDone <- startTCPSender(ctx, addr, ch, release)
+		senderDone <- sendTCPConn(ctx, conn, ch, release)
 	}()
 	select {
 	case <-ctx.Done():
@@ -324,7 +367,7 @@ func StartDesktopStreamOpts(ctx context.Context, addr string, opts StreamOptions
 }
 
 func StartReceiverWithPlayback(ctx context.Context, port string) error {
-	ab := NewAudioBuffer(384000)
+	ab := NewAudioBuffer(receiverBufferBytes)
 	mctx, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
 	if err != nil {
 		return err
@@ -336,12 +379,26 @@ func StartReceiverWithPlayback(ctx context.Context, port string) error {
 	cfg := malgo.DefaultDeviceConfig(malgo.Playback)
 	cfg.Playback.Format = malgo.FormatS16
 	cfg.Playback.Channels = 2
-	cfg.SampleRate = 48000
+	cfg.SampleRate = sampleRate
 	cfg.PeriodSizeInFrames = periodSizeFrames(ProfileLowLatency)
+
+	var emptyPeriods atomic.Uint32
+	idleCh := make(chan struct{}, 1)
+
 	onSend := func(pOutput []byte, _ []byte, _ uint32) {
 		n := ab.Pop(pOutput)
-		for i := n; i < len(pOutput); i++ {
-			pOutput[i] = 0
+		if n < len(pOutput) {
+			clear(pOutput[n:])
+		}
+		if n == 0 {
+			if emptyPeriods.Add(1) == receiverIdlePeriods {
+				select {
+				case idleCh <- struct{}{}:
+				default:
+				}
+			}
+		} else {
+			emptyPeriods.Store(0)
 		}
 	}
 	device, err := malgo.InitDevice(mctx.Context, cfg, malgo.DeviceCallbacks{Data: onSend})
@@ -352,5 +409,39 @@ func StartReceiverWithPlayback(ctx context.Context, port string) error {
 	if err := device.Start(); err != nil {
 		return err
 	}
+
+	// Coordinator goroutine pauses the audio hardware device after sustained
+	// silence and wakes it immediately when new TCP audio data arrives.
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-idleCh:
+				if ab.Len() > 0 {
+					emptyPeriods.Store(0)
+					continue
+				}
+				_ = device.Stop()
+				if ab.Len() > 0 {
+					emptyPeriods.Store(0)
+					_ = device.Start()
+					continue
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-ab.wakeCh:
+					emptyPeriods.Store(0)
+					select {
+					case <-idleCh:
+					default:
+					}
+					_ = device.Start()
+				}
+			}
+		}
+	}()
+
 	return StartTCPReceiver(ctx, port, ab, 1920)
 }
