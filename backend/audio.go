@@ -80,6 +80,9 @@ type StreamOptions struct {
 	// receiver already outputs zeros when its buffer runs dry, so no protocol
 	// change is needed. Keeps the WiFi radio / USB link idle while nothing plays.
 	SuppressSilence bool
+	// Router, when set, replaces default device capture: only the sources
+	// linked in the router are mixed into the stream (Windows patchbay).
+	Router *Router
 }
 
 func DefaultStreamOptions() StreamOptions {
@@ -195,6 +198,17 @@ func (b *AudioBuffer) Pop(p []byte) int {
 	return toRead
 }
 
+// Discard drops the n oldest bytes.
+func (b *AudioBuffer) Discard(n int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if n > b.size {
+		n = b.size
+	}
+	b.tail = (b.tail + n) % b.capacity
+	b.size -= n
+}
+
 func (b *AudioBuffer) Len() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -243,6 +257,10 @@ func StartDesktopStreamOpts(ctx context.Context, addr string, opts StreamOptions
 	}
 	defer conn.Close()
 
+	// Child context so the mixer goroutine dies with this attempt.
+	ctx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
+
 	mctx, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
 	if err != nil {
 		return err
@@ -252,7 +270,9 @@ func StartDesktopStreamOpts(ctx context.Context, addr string, opts StreamOptions
 		mctx.Free()
 	}()
 	var cfg malgo.DeviceConfig
-	if runtime.GOOS == "windows" {
+	if opts.Router != nil {
+		cfg = malgo.DefaultDeviceConfig(malgo.Capture)
+	} else if runtime.GOOS == "windows" {
 		cfg = malgo.DefaultDeviceConfig(malgo.Loopback)
 	} else {
 		cfg = malgo.DefaultDeviceConfig(malgo.Capture)
@@ -314,7 +334,7 @@ func StartDesktopStreamOpts(ctx context.Context, addr string, opts StreamOptions
 
 	// Only touched from the (single) miniaudio capture thread.
 	var quietFor time.Duration
-	onRecv := func(_ []byte, pInput []byte, _ uint32) {
+	handleChunk := func(pInput []byte) {
 		if len(pInput) == 0 || ctx.Err() != nil {
 			return
 		}
@@ -346,13 +366,25 @@ func StartDesktopStreamOpts(ctx context.Context, addr string, opts StreamOptions
 			}
 		}
 	}
-	device, err := malgo.InitDevice(mctx.Context, cfg, malgo.DeviceCallbacks{Data: onRecv})
-	if err != nil {
-		return err
-	}
-	defer device.Uninit()
-	if err := device.Start(); err != nil {
-		return err
+	if opts.Router != nil {
+		// Routed mode: no device of our own; a clock-driven mixer pulls the
+		// linked sources and feeds the same sender pipeline.
+		endTimer := beginHighResTimer()
+		defer endTimer()
+		opts.Router.Start()
+		defer opts.Router.Stop()
+		go runMixer(ctx, opts.Router, int(cfg.PeriodSizeInFrames), handleChunk)
+	} else {
+		device, err := malgo.InitDevice(mctx.Context, cfg, malgo.DeviceCallbacks{
+			Data: func(_ []byte, pInput []byte, _ uint32) { handleChunk(pInput) },
+		})
+		if err != nil {
+			return err
+		}
+		defer device.Uninit()
+		if err := device.Start(); err != nil {
+			return err
+		}
 	}
 	senderDone := make(chan error, 1)
 	go func() {
@@ -363,6 +395,40 @@ func StartDesktopStreamOpts(ctx context.Context, addr string, opts StreamOptions
 		return nil
 	case err := <-senderDone:
 		return err
+	}
+}
+
+// runMixer emits one mixed period every period of wall-clock time. It is
+// clock-driven (not tick-counted) so coarse OS timers cannot make it drift.
+func runMixer(ctx context.Context, r *Router, periodFrames int, emit func([]byte)) {
+	if periodFrames <= 0 {
+		periodFrames = 480
+	}
+	period := time.Duration(periodFrames) * time.Second / sampleRate
+	tick := period / 2
+	if tick < 2*time.Millisecond {
+		tick = 2 * time.Millisecond
+	}
+	t := time.NewTicker(tick)
+	defer t.Stop()
+	chunk := make([]byte, periodFrames*bytesPerFrame)
+	start := time.Now()
+	var emitted int64
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		target := int64(time.Since(start)) * sampleRate / int64(time.Second)
+		if target-emitted > int64(8*periodFrames) { // stalled: resync, don't burst
+			emitted = target - int64(periodFrames)
+		}
+		for emitted+int64(periodFrames) <= target {
+			r.Mix(chunk)
+			emit(chunk)
+			emitted += int64(periodFrames)
+		}
 	}
 }
 

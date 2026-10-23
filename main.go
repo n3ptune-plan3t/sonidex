@@ -178,6 +178,33 @@ func showStreamer(a fyne.App) {
 	}
 	modeSelect.OnChanged(modeUSBADB)
 
+	// Windows only: a patchbay decides which apps are streamed (the Windows
+	// counterpart of routing in Helvum/PipeWire). nil elsewhere.
+	router := backend.NewPlatformRouter()
+	var routingBox fyne.CanvasObject = container.NewVBox()
+	if router != nil {
+		_ = router.Link(backend.SystemPID) // default: stream everything, like before
+		router.SetNotify(func(msg string) { statusLabel.SetText(msg) })
+		var pbWin fyne.Window
+		routingBtn := widget.NewButton("Audio routing (patchbay)…", func() {
+			if pbWin != nil {
+				pbWin.RequestFocus()
+				return
+			}
+			pbWin = a.NewWindow("Sonidex Patchbay")
+			pb := newPatchbay(router, statusLabel.SetText)
+			stop := make(chan struct{})
+			pbWin.SetOnClosed(func() { close(stop); pbWin = nil })
+			hint := widget.NewLabel("Drag from an app's port to Sonidex (or click the port). Click a cable to remove it.")
+			hint.Wrapping = fyne.TextWrapWord
+			pbWin.SetContent(container.NewBorder(hint, nil, nil, nil, pb))
+			pbWin.Resize(fyne.NewSize(720, 460))
+			pb.startAutoRefresh(stop)
+			pbWin.Show()
+		})
+		routingBox = routingBtn
+	}
+
 	profileSelect := widget.NewSelect(backend.ProfileNames, func(name string) {
 		a.Preferences().SetString("profile", name)
 	})
@@ -247,6 +274,7 @@ func showStreamer(a fyne.App) {
 		opts := backend.StreamOptions{
 			Profile:         backend.ProfileFromName(profileSelect.Selected),
 			SuppressSilence: silenceCheck.Checked,
+			Router:          router,
 		}
 		go ctrl.loop(sessCtx, func(ctx context.Context) error {
 			return backend.StartDesktopStreamOpts(ctx, addr, opts)
@@ -262,6 +290,7 @@ func showStreamer(a fyne.App) {
 		adbDeviceBox,
 		widget.NewLabel("Port:"),
 		portEntry,
+		routingBox,
 		widget.NewLabel("Latency / power profile:"),
 		profileSelect,
 		silenceCheck,

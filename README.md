@@ -34,6 +34,12 @@ Grab the binary for your platform — no local Go toolchain or compiling needed.
 * **Linux hosts:** PulseAudio or PipeWire (with its Pulse shim) running, with a `Monitor of ...` source available for your output device — this is what loopback capture reads from. Check with `pactl list sources short`. Plain ALSA-only setups with no Pulse/PipeWire server aren't supported for loopback capture. musl-based distros (e.g. Alpine) need a glibc compat layer (such as `gcompat`) to run the prebuilt binary, or should build from source.
 ---
 
+### Windows audio routing (patchbay)
+On Windows the streamer has an **Audio routing (patchbay)…** button, the counterpart of routing in Helvum/PipeWire. Apps with an audio session appear on the left, **Sonidex → Phone** on the right. Drag from an app's port to Sonidex (or click the port) to stream only that app; click a cable to remove it.
+* Default is **System (all apps)**, as before. Linking an app replaces the system link and vice versa, so audio is never doubled.
+* Per-app capture uses WASAPI process loopback and needs Windows 10 2004+ or Windows 11. The app keeps playing on the PC speakers too.
+---
+
 ### Usage
 1. Connect your Android phone to the PC via USB.
 2. Launch **Sonidex Receiver** on Android and tap **Start Receiving**.
