@@ -139,7 +139,7 @@ jobs:
             export CC=clang
             export CGO_CFLAGS="${CGO_CFLAGS} -D_GNU_SOURCE"
           fi
-          go build -trimpath -ldflags="-s -w" -o sonidex-tui-linux-amd64 ./cmd/sonidex-tui
+          go build -trimpath -ldflags="-s -w" -o sonidex-tui-linux-amd64 ./cmd/sonidex-engine
 
       - name: Upload TUI Artifact
         uses: actions/upload-artifact@v4
@@ -162,7 +162,7 @@ jobs:
             pkg: .
             tags: wayland
           - target: sonidex-tui-linux-znver1-amd64
-            pkg: ./cmd/sonidex-tui
+            pkg: ./cmd/sonidex-engine
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
