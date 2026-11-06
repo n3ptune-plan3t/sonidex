@@ -63,6 +63,12 @@ Every capture period wakes the audio server, this process and the network stack,
 * The GUIs are event-driven (no render loop), so an idle window costs nothing; the TUI is still the lightest option on battery.
 ---
 
+### Android visualizer (optional)
+The receiver has an optional full-screen visualizer behind the controls: **Cosmos**, **Fireflies** and **Wave** (tap *Visualizer* to cycle, Off by default). It reacts to the audio being played and pulses on beats; the beat/level analysis reads the PCM stream directly, so no extra permission is needed.
+* Runs only while the app is in front and the screen is on; it stops drawing and analysing when the screen turns off or another app is opened, and sleeps entirely while no audio is playing.
+* ~30 fps (~20 fps in Android battery saver). Tap an empty area to hide or show the controls.
+---
+
 ### Credits
 * Linux windowing: [go-wayland](https://github.com/rajveermalviya/go-wayland) (BSD), [jezek/xgb](https://github.com/jezek/xgb) (BSD), Go fonts via [golang.org/x/image](https://pkg.go.dev/golang.org/x/image) (BSD-3)
 * TUI Framework: [Bubble Tea](https://github.com/charmbracelet/bubbletea), [Bubbles](https://github.com/charmbracelet/bubbles), [Lip Gloss](https://github.com/charmbracelet/lipgloss) (MIT)

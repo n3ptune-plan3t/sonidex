@@ -38,6 +38,8 @@ final class Receiver {
     private final int port;
     private final Callback callback;
     private volatile boolean stopped;
+    /** Optional: feeds the on-screen visualizer. Only called while it reports enabled. */
+    private volatile Analyzer analyzer;
 
     private final Object lock = new Object();
     private final byte[] ring = new byte[RING_BYTES];
@@ -50,6 +52,10 @@ final class Receiver {
     Receiver(int port, Callback callback) {
         this.port = port;
         this.callback = callback;
+    }
+
+    void setAnalyzer(Analyzer a) {
+        analyzer = a;
     }
 
     void start() {
@@ -279,6 +285,12 @@ final class Receiver {
         int empty = 0;
         while (!stopped) {
             int n = pop(chunk);
+            if (n > 0) {
+                Analyzer an = analyzer;
+                if (an != null && an.enabled) { // a single volatile read when the visualizer is off/hidden
+                    an.feed(chunk, n);
+                }
+            }
             if (n < PERIOD_BYTES) {
                 Arrays.fill(chunk, n, PERIOD_BYTES, (byte) 0);
             }
