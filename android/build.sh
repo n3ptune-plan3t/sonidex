@@ -4,6 +4,9 @@
 # Usage: android/build.sh [output.apk]      (needs ANDROID_HOME and a JDK 17)
 # Signs with a throwaway debug key unless KEYSTORE/KS_PASS are provided.
 set -euo pipefail
+# Resolve the output path relative to where the script was *called from*,
+# before changing into android/.
+OUT="$(realpath -m "${1:-Sonidex.apk}")"
 cd "$(dirname "$0")"
 
 SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
@@ -11,8 +14,13 @@ SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 API="${ANDROID_API:-34}"
 JAR="$SDK/platforms/android-$API/android.jar"
 [ -f "$JAR" ] || { echo "missing $JAR (sdkmanager \"platforms;android-$API\")" >&2; exit 1; }
-BT="$(ls -d "$SDK"/build-tools/* | sort -V | tail -n1)"
-OUT="$(realpath -m "${1:-Sonidex.apk}")"
+if [ -d "$SDK/build-tools/$API.0.0" ]; then
+  BT="$SDK/build-tools/$API.0.0"
+else
+  BT="$(ls -d "$SDK"/build-tools/*/ | sort -V | tail -n1)"
+  BT="${BT%/}"
+fi
+echo "using $BT and $JAR"
 MIN_SDK=23   # AudioTrack.Builder
 
 rm -rf build && mkdir -p build/classes
@@ -30,7 +38,8 @@ KS_PASS="${KS_PASS:-android}"
 if [ ! -f "$KS" ]; then
   keytool -genkeypair -keystore "$KS" -storepass "$KS_PASS" -keypass "$KS_PASS" \
     -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
-    -dname "CN=Android Debug,O=Android,C=US" >/dev/null 2>&1
+    -dname "CN=Android Debug,O=Android,C=US"
 fi
 "$BT/apksigner" sign --ks "$KS" --ks-pass "pass:$KS_PASS" --key-pass "pass:$KS_PASS" --out "$OUT" build/aligned.apk
+[ -s "$OUT" ] || { echo "APK was not produced: $OUT" >&2; exit 1; }
 echo "built $OUT"

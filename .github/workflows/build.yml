@@ -224,13 +224,14 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" || true
 
       - name: Build Android APK
-        run: ./android/build.sh Sonidex.apk
+        run: bash android/build.sh Sonidex.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: sonidex-android-apk
           path: Sonidex.apk
+          if-no-files-found: error
 
   release:
     name: Tag and Release

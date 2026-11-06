@@ -126,36 +126,36 @@ func New() (*Platform, error) {
 		switch g.Interface {
 		case "wl_compositor":
 			c := client.NewCompositor(p.ctx)
-			if err := reg.Bind(g.Name, g.Interface, v(4), c); err != nil {
+			if err := p.bind(g.Name, g.Interface, v(4), c); err != nil {
 				return nil, err
 			}
 			p.compositor = c
 		case "wl_shm":
 			s := client.NewShm(p.ctx)
-			if err := reg.Bind(g.Name, g.Interface, v(1), s); err != nil {
+			if err := p.bind(g.Name, g.Interface, v(1), s); err != nil {
 				return nil, err
 			}
 			p.shm = s
 		case "wl_seat":
 			s := client.NewSeat(p.ctx)
-			if err := reg.Bind(g.Name, g.Interface, v(5), s); err != nil {
+			if err := p.bind(g.Name, g.Interface, v(5), s); err != nil {
 				return nil, err
 			}
 			p.seat = s
 		case "xdg_wm_base":
 			w := xdg.NewWmBase(p.ctx)
-			if err := reg.Bind(g.Name, g.Interface, v(2), w); err != nil {
+			if err := p.bind(g.Name, g.Interface, v(2), w); err != nil {
 				return nil, err
 			}
 			p.wm = w
 		case "zxdg_decoration_manager_v1":
 			d := xdgdeco.NewDecorationManager(p.ctx)
-			if err := reg.Bind(g.Name, g.Interface, v(1), d); err == nil {
+			if err := p.bind(g.Name, g.Interface, v(1), d); err == nil {
 				p.deco = d
 			}
 		case "wl_output":
 			o := client.NewOutput(p.ctx)
-			if err := reg.Bind(g.Name, g.Interface, v(3), o); err == nil {
+			if err := p.bind(g.Name, g.Interface, v(3), o); err == nil {
 				p.outputs[o] = 1
 				o.SetScaleHandler(func(e client.OutputScaleEvent) { p.outputs[o] = e.Factor })
 			}
@@ -186,6 +186,11 @@ func New() (*Platform, error) {
 		fmt.Fprintln(os.Stderr, "sonidex: keyboard text input unavailable:", err)
 	}
 	return p, nil
+}
+
+// bind is wl_registry.bind with a spec-correct string encoding.
+func (p *Platform) bind(name uint32, iface string, version uint32, id client.Proxy) error {
+	return p.ctx.WriteMsg(bindRequest(p.reg.ID(), name, iface, version, id.ID()), nil)
 }
 
 func (p *Platform) Scale() float64 { return p.uiScale }
@@ -268,8 +273,9 @@ func (p *Platform) Run(opt mini.WindowOptions, sink mini.Sink) error {
 	if p.top, err = p.xsurf.GetToplevel(); err != nil {
 		return err
 	}
-	_ = p.top.SetTitle(opt.Title)
-	_ = p.top.SetAppId(opt.AppID)
+	// go-wayland's own SetTitle/SetAppId mis-encode strings (see wire.go).
+	_ = p.ctx.WriteMsg(stringRequest(p.top.ID(), 2, opt.Title), nil) // xdg_toplevel.set_title
+	_ = p.ctx.WriteMsg(stringRequest(p.top.ID(), 3, opt.AppID), nil) // xdg_toplevel.set_app_id
 	_ = p.top.SetMinSize(p.minW, p.minH)
 	if bs > 1 {
 		_ = p.surface.SetBufferScale(bs)
