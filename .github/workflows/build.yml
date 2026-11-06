@@ -32,10 +32,6 @@ jobs:
           - os: linux
             arch: amd64
             target: sonidex-linux-amd64
-          - os: linux
-            arch: amd64
-            target: sonidex-linux-wayland-amd64
-            tags: wayland
           - os: windows
             arch: amd64
             target: sonidex-windows-amd64.exe
@@ -53,8 +49,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libgl1-mesa-dev xorg-dev libasound2-dev gcc-mingw-w64 \
-            libwayland-dev libxkbcommon-dev wayland-protocols
+            libasound2-dev gcc-mingw-w64
           if [ "${{ inputs.compiler }}" = "clang" ]; then
             sudo apt-get install -y --no-install-recommends clang
           fi
@@ -158,9 +153,6 @@ jobs:
         include:
           - target: sonidex-linux-znver1-amd64
             pkg: .
-          - target: sonidex-linux-wayland-znver1-amd64
-            pkg: .
-            tags: wayland
           - target: sonidex-tui-linux-znver1-amd64
             pkg: ./cmd/sonidex-tui
     steps:
@@ -176,8 +168,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libgl1-mesa-dev xorg-dev libasound2-dev \
-            libwayland-dev libxkbcommon-dev wayland-protocols
+            libasound2-dev
           if [ "${{ inputs.compiler }}" = "clang" ]; then
             sudo apt-get install -y --no-install-recommends clang
           fi
@@ -215,39 +206,31 @@ jobs:
           path: ${{ matrix.target }}
 
   build-android:
+    # The receiver is a native Android app (plain android.widget views, no
+    # AppCompat/Kotlin/Gradle), built with the SDK command-line tools only.
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
-          go-version: '1.22'
+          distribution: temurin
+          java-version: '17'
 
-      - name: Regenerate Clean Checksums (with retries)
+      - name: Ensure Android SDK pieces
         run: |
-          rm -f go.sum
-          ok=0
-          for i in 1 2 3 4 5; do
-            if go mod tidy && go mod download; then ok=1; break; fi
-            echo "go mod tidy failed (attempt $i), retrying..."
-            sleep $((i * 10))
-          done
-          [ "$ok" = 1 ] || exit 1
-
-      - name: Install fyne-cross
-        run: go install github.com/fyne-io/fyne-cross@latest
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" || true
 
       - name: Build Android APK
-        run: |
-          fyne-cross android -app-id com.local.sonidex -icon icon.png .
+        run: ./android/build.sh Sonidex.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: sonidex-android-apk
-          path: fyne-cross/dist/android/*.apk
+          path: Sonidex.apk
 
   release:
     name: Tag and Release
@@ -271,11 +254,9 @@ jobs:
           mkdir -p release-assets
           find dist -type f \( \
             -name 'sonidex-linux-amd64' -o \
-            -name 'sonidex-linux-wayland-amd64' -o \
             -name 'sonidex-windows-amd64.exe' -o \
             -name 'sonidex-tui-linux-amd64' -o \
             -name 'sonidex-linux-znver1-amd64' -o \
-            -name 'sonidex-linux-wayland-znver1-amd64' -o \
             -name 'sonidex-tui-linux-znver1-amd64' -o \
             -name '*.apk' \
           \) -exec cp {} release-assets/ \;

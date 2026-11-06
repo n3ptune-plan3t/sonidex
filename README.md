@@ -14,18 +14,20 @@ To be updated soon
 ### Features
 * **Zero Terminal Setup:** GUI-based; automatically discovers connected devices and provisions ADB tunnels behind the scenes.
 * **Lossless PCM:** Raw 48 kHz stereo streaming without compression overhead or fidelity loss.
-* **Cross-platform UI:** Lightweight Fyne GUI running natively across platforms (Windows/Linux) and display servers (Xorg/XLibre/Wayland), with an optional software-rendering mode that avoids GPU usage.
+* **Native, ultra-light UI on every platform — no GTK, Qt or GPU toolkit:**
+  * **Windows:** plain Win32 controls (visual styles, per-monitor DPI) plus a GDI patchbay.
+  * **Linux:** a tiny pure-Go software-rendered toolkit that talks **Wayland** (wl_shm + xdg-shell) or **X11** directly; one binary picks the right one at start-up. CPU-only, event-driven, nothing redrawn or woken while idle.
+  * **Android:** stock `android.widget` views in a tiny APK (no AppCompat, Kotlin or Gradle).
 * **Terminal UI option:** An alternative to the GUI — a [Bubble Tea](https://github.com/charmbracelet/bubbletea)-based TUI streamer for Linux that talks to the same backend, with no GUI toolkit dependency.
-* **Small RAM Footprint:** Efficient Go-based runtime.
+* **Small RAM Footprint:** Efficient Go-based runtime and no UI toolkit runtime on top of it.
 ---
 
 ### Downloads
 Grab the binary for your platform — no local Go toolchain or compiling needed.
 * `sonidex-windows-amd64.exe`: GUI streamer, run on Windows.
-* `sonidex-linux-amd64`: GUI streamer, run on Xorg/XLibre on Linux.
-* `sonidex-linux-wayland-amd64`: GUI streamer built with the `wayland` tag for native Wayland sessions.
-* `sonidex-tui-linux-amd64`: terminal streamer for Linux — same streaming backend, no GUI toolkit.
-* `Sonidex.apk`: receiver, install on the Android phone.
+* `sonidex-linux-amd64`: GUI streamer for Linux. A single binary for both Wayland and Xorg/XLibre sessions (Wayland is used when `WAYLAND_DISPLAY` is set, otherwise X11).
+* `sonidex-tui-linux-amd64`: terminal streamer for Linux — same streaming backend, no GUI at all.
+* `Sonidex.apk`: receiver (native Android app, Android 6.0+), install on the Android phone.
 ---
 
 ### Prerequisites
@@ -46,19 +48,22 @@ On Windows the streamer has an **Audio routing (patchbay)…** button, the count
 3. Launch **Sonidex Streamer** on the PC, pick your phone under **Android Target Device** (use **Refresh Devices** if the list is empty), and tap **Start Streaming**.
 ---
 
-### Settings
-* **Disable GPU (software rendering):** checkbox available in every build (PC streamer and Android receiver). When enabled, the app forces CPU-based rendering via `LIBGL_ALWAYS_SOFTWARE=1` and `GALLIUM_DRIVER=llvmpipe` instead of using the GPU. The choice is saved in the app preferences. Changing it requires an app restart to take full effect, since the rendering path is fixed at startup.
-* You can also force software rendering before first launch with the environment variable `SONIDEX_NO_GPU=1`.
+### Linux GUI notes
+* **Backend:** chosen automatically; force one with `SONIDEX_BACKEND=wayland` or `SONIDEX_BACKEND=x11`.
+* **Scale:** X11 follows `Xft.dpi`, Wayland follows the output scale (whole numbers). Override with `SONIDEX_SCALE=1.5`. `SONIDEX_THEME=light` switches to the light palette (dark by default).
+* **Wayland keyboard input** loads `libxkbcommon.so.0` at run time (present on any Wayland system); without it only Tab/Enter/arrows/Backspace work. Window borders come from the compositor (server-side decorations).
+* The old *Disable GPU* checkbox and `SONIDEX_NO_GPU` are gone: the UI never uses the GPU.
+* There is no clipboard support in the entry fields yet, so type addresses rather than pasting them.
 ---
 
 ### Power / battery
 Every capture period wakes the audio server, this process and the network stack, so the period size is the main battery lever on a laptop.
 * **Latency / power profile** (GUI dropdown, `l` in the TUI): *Low latency* (10 ms, default), *Balanced* (20 ms), *Battery saver* (40 ms). `SONIDEX_PERIOD_FRAMES` still overrides it.
 * **Pause sending while silent** (GUI checkbox, `s` in the TUI, `SONIDEX_SILENCE_SUPPRESS=0` to disable): after ~0.75 s of digital silence nothing is sent until sound resumes, so the WiFi radio/USB link can idle. The receiver needs no changes.
-* The TUI build avoids the GUI toolkit's always-on 60 Hz event loop and is the lightest option on battery.
+* The GUIs are event-driven (no render loop), so an idle window costs nothing; the TUI is still the lightest option on battery.
 ---
 
 ### Credits
-* UI Framework: [Fyne](https://fyne.io/) (MPL-2.0)
+* Linux windowing: [go-wayland](https://github.com/rajveermalviya/go-wayland) (BSD), [jezek/xgb](https://github.com/jezek/xgb) (BSD), Go fonts via [golang.org/x/image](https://pkg.go.dev/golang.org/x/image) (BSD-3)
 * TUI Framework: [Bubble Tea](https://github.com/charmbracelet/bubbletea), [Bubbles](https://github.com/charmbracelet/bubbles), [Lip Gloss](https://github.com/charmbracelet/lipgloss) (MIT)
 * Audio Backend: [malgo / miniaudio](https://github.com/gen2brain/malgo) (MIT)
