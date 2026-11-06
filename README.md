@@ -18,7 +18,7 @@ To be updated soon
   * **Windows:** plain Win32 controls (visual styles, per-monitor DPI) plus a GDI patchbay.
   * **Linux:** a tiny pure-Go software-rendered toolkit that talks **Wayland** (wl_shm + xdg-shell) or **X11** directly; one binary picks the right one at start-up. CPU-only, event-driven, nothing redrawn or woken while idle.
   * **Android:** stock `android.widget` views in a tiny APK (no AppCompat, Kotlin or Gradle).
-* **Terminal UI option:** An alternative to the GUI — a [Bubble Tea](https://github.com/charmbracelet/bubbletea)-based TUI streamer for Linux that talks to the same backend, with no GUI toolkit dependency.
+* **Terminal UI option:** An alternative to the GUI — a [Bubble Tea](https://github.com/charmbracelet/bubbletea)-based TUI streamer for Linux that talks to the same backend, with no GUI toolkit dependency. It opens in its own full-screen terminal window (alternate screen, like vim or htop), adapts to the window size and puts your terminal back as it was when you quit.
 * **Small RAM Footprint:** Efficient Go-based runtime and no UI toolkit runtime on top of it.
 ---
 

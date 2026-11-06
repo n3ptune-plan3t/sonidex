@@ -10,19 +10,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"sonidex/backend"
-)
-
-var (
-	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
-	dimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	selectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
-	okStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	errStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	helpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	boxStyle      = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
 )
 
 type statusMsg struct {
@@ -86,6 +75,8 @@ type model struct {
 	lastErr      string
 	profile      backend.Profile
 	silenceSkip  bool
+	width        int // window size, from tea.WindowSizeMsg
+	height       int
 }
 
 func initialModel() model {
@@ -175,8 +166,8 @@ func connectWirelessCmd(addr string) tea.Cmd {
 
 func (m *model) pushLog(s string) {
 	m.logs = append(m.logs, s)
-	if len(m.logs) > 8 {
-		m.logs = m.logs[len(m.logs)-8:]
+	if len(m.logs) > maxLogs {
+		m.logs = m.logs[len(m.logs)-maxLogs:]
 	}
 }
 
@@ -210,6 +201,10 @@ func runLoop(ctx context.Context, addr string, opts backend.StreamOptions, statu
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		return m, nil
 
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -372,75 +367,15 @@ func (m model) toggleStream() (tea.Model, tea.Cmd) {
 	return m, func() tea.Msg { return <-done }
 }
 
-func (m model) View() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("Sonidex Streamer (TUI)") + "\n\n")
-
-	b.WriteString(dimStyle.Render("Mode (m to cycle): ") + selectedStyle.Render(m.mode.String()) + "\n\n")
-
-	switch m.mode {
-	case modeWirelessADB:
-		b.WriteString(dimStyle.Render("Device ip:port: ") + m.wirelessAddr.View() + "  " + helpStyle.Render("(c to connect)") + "\n\n")
-	case modeWiFiDirect:
-		b.WriteString(dimStyle.Render("Phone IP: ") + m.directIP.View() + "\n\n")
-	}
-
-	if m.mode != modeWiFiDirect {
-		b.WriteString(dimStyle.Render("Android Target Device:") + "\n")
-		if len(m.devices) == 0 {
-			b.WriteString(dimStyle.Render("  (none found — press r to refresh)") + "\n")
-		}
-		for i, d := range m.devices {
-			cursor := "  "
-			style := lipgloss.NewStyle()
-			if i == m.cursor {
-				cursor = "> "
-				style = selectedStyle
-			}
-			b.WriteString(style.Render(cursor+d) + "\n")
-		}
-		b.WriteString("\n")
-	}
-
-	b.WriteString(dimStyle.Render("Port: ") + m.port.View() + "\n\n")
-	silence := "off"
-	if m.silenceSkip {
-		silence = "on"
-	}
-	b.WriteString(dimStyle.Render("Profile (l): ") + selectedStyle.Render(m.profile.String()) +
-		dimStyle.Render("   Pause on silence (s): ") + selectedStyle.Render(silence) + "\n\n")
-
-	status := "Ready"
-	statusStyle := dimStyle
-	if m.running {
-		status = "Streaming active..."
-		statusStyle = okStyle
-	}
-	if m.lastErr != "" {
-		status = m.lastErr
-		statusStyle = errStyle
-	}
-	b.WriteString(statusStyle.Render(status) + "\n\n")
-
-	if len(m.logs) > 0 {
-		b.WriteString(boxStyle.Render(strings.Join(m.logs, "\n")) + "\n\n")
-	}
-
-	action := "enter: start streaming"
-	if m.running {
-		action = "enter: stop streaming"
-	}
-	b.WriteString(helpStyle.Render(fmt.Sprintf("↑/↓: select · r: refresh · tab: next field · m: mode · l: profile · s: silence · %s · q: quit", action)))
-
-	return b.String()
-}
-
 func main() {
 	if os.Getenv("GOGC") == "" {
 		debug.SetGCPercent(50)
 	}
-	p := tea.NewProgram(initialModel())
+	// Alternate screen: the TUI opens its own full-window screen, like vim or
+	// htop, and the terminal's previous contents come back on exit.
+	p := tea.NewProgram(initialModel(), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
-		fmt.Println("error:", err)
+		fmt.Fprintln(os.Stderr, "sonidex-tui:", err)
+		os.Exit(1)
 	}
 }
